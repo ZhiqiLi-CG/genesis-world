@@ -52,11 +52,21 @@ def test_maxvolume(pbd_material, show_viewer, box_obj_path):
 
 @pytest.mark.required
 @pytest.mark.parametrize("n_envs", [0, 2])
-def test_get_mass(n_envs, show_viewer, tol):
+@pytest.mark.parametrize("precision", ["32", "64"])
+def test_particle_dynamics(n_envs, show_viewer, tol):
+    DT = 2e-3
+    SUBSTEPS = 20
+    GRAVITY = -9.81
+
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
-            dt=4e-3,
-            substeps=10,
+            dt=DT,
+            substeps=SUBSTEPS,
+            gravity=(0.0, 0.0, GRAVITY),
+        ),
+        viewer_options=gs.options.ViewerOptions(
+            camera_pos=(4.0, -4.0, 3.0),
+            camera_lookat=(0.5, 0.0, 1.0),
         ),
         show_viewer=show_viewer,
     )
@@ -69,12 +79,39 @@ def test_get_mass(n_envs, show_viewer, tol):
         ),
         material=gs.materials.PBD.Cloth(),
     )
+    particles = []
+    for height in (0.5, 2.0):
+        particles.append(
+            scene.add_entity(
+                morph=gs.morphs.Box(
+                    pos=(1.0, 0.0, height),
+                    size=(0.02, 0.02, 0.02),
+                ),
+                material=gs.materials.PBD.Particle(
+                    sampler="regular",
+                ),
+            )
+        )
     scene.build(n_envs=n_envs)
 
     mass = cloth.get_mass()
     expected_n = max(n_envs, 1)
     assert mass.shape == (expected_n,), f"Expected shape ({expected_n},), got {mass.shape}"
     assert (mass > 0).all(), f"Expected positive mass, got {mass}"
+
+    for velocity in (0.0, 0.125):
+        scene.reset()
+        positions = [entity.get_particles_pos().clone() for entity in particles]
+        for entity in particles:
+            entity.set_particles_vel((velocity, 0.0, 0.0))
+        scene.step()
+        for entity, pos in zip(particles, positions):
+            assert_allclose(entity.get_particles_vel(), (velocity, 0.0, GRAVITY * DT), atol=2e-6)
+            assert_allclose(
+                entity.get_particles_pos() - pos,
+                (velocity * DT, 0.0, 0.5 * GRAVITY * DT * (DT + DT / SUBSTEPS)),
+                atol=1e-6,
+            )
 
 
 @pytest.mark.required

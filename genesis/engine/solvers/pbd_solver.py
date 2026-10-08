@@ -132,6 +132,7 @@ class PBDSolver(GravityMixin, TimeBasedMixin, Solver):
             free=gs.qd_bool,  # if not free, the particle is not affected by internal forces and solely controlled by external user until released
             pos=gs.qd_vec3,  # position
             ipos=gs.qd_vec3,  # initial position
+            pos_predict=gs.qd_vec3,
             dpos=gs.qd_vec3,  # delta position
             vel=gs.qd_vec3,  # velocity
             lam=gs.qd_float,
@@ -405,6 +406,7 @@ class PBDSolver(GravityMixin, TimeBasedMixin, Solver):
             self.particles[i_p, i_b].pos = (
                 self.particles[i_p, i_b].pos + self.particles[i_p, i_b].vel * self._substep_dt
             )
+            self.particles[i_p, i_b].pos_predict = self.particles[i_p, i_b].pos
 
     @qd.kernel
     def _kernel_solve_stretch(self, f: qd.i32):
@@ -735,8 +737,9 @@ class PBDSolver(GravityMixin, TimeBasedMixin, Solver):
     @qd.kernel
     def _kernel_compute_velocity(self, f: qd.i32):
         for i_p, i_b in qd.ndrange(self._n_particles, self._B):
-            self.particles_reordered[i_p, i_b].vel = (
-                self.particles_reordered[i_p, i_b].pos - self.particles_reordered[i_p, i_b].ipos
+            # Applying only constraint displacement keeps position integration roundoff out of the velocity update
+            self.particles_reordered[i_p, i_b].vel += (
+                self.particles_reordered[i_p, i_b].pos - self.particles_reordered[i_p, i_b].pos_predict
             ) / self._substep_dt
 
     @qd.kernel
