@@ -697,3 +697,63 @@ def test_implicit_sap_coupler_hard_constraint_and_collision(show_viewer):
     assert_allclose(com_pos_z_f - com_pos_z_0, com_pos_delta, tol=0.05)
     sphere_center = sphere.get_state().pos[..., sphere_center_idx, :]
     assert_allclose(sphere_center, sphere_target_poss, tol=1e-8)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("precision", ["32", "64"])
+@pytest.mark.parametrize("n_envs", [0, 2])
+def test_explicit_elastic_acceleration(n_envs, precision, show_viewer):
+    DT = 2e-5
+    HEIGHT = 0.25
+    BOX_SIZE = 0.125
+    E = 1e5
+    RHO = 1000.0
+    STRAIN = 1 / 64
+
+    scene = gs.Scene(
+        sim_options=gs.options.SimOptions(
+            dt=DT,
+            gravity=(0.0, 0.0, 0.0),
+        ),
+        viewer_options=gs.options.ViewerOptions(
+            camera_pos=(0.3, 0.3, 0.4),
+            camera_lookat=(0.0, 0.0, HEIGHT),
+        ),
+        show_viewer=show_viewer,
+    )
+    box = scene.add_entity(
+        morph=gs.morphs.Box(
+            pos=(0.0, 0.0, HEIGHT),
+            size=(BOX_SIZE, BOX_SIZE, BOX_SIZE),
+        ),
+        material=gs.materials.FEM.Elastic(
+            E=E,
+            nu=0.0,
+            rho=RHO,
+        ),
+    )
+    scene.build(n_envs=n_envs)
+
+    rest = tensor_to_array(box.init_positions)
+    tetrahedra = rest[box.elems]
+    volumes = np.abs(np.linalg.det(tetrahedra[:, :3] - tetrahedra[:, 3, None])) / 6
+    mass = np.zeros(box.n_vertices)
+    np.add.at(mass, box.elems, RHO * volumes[:, None] / 4)
+
+    # Constant axial stress gives the exact nodal force by integrating traction over the boundary.
+    faces = box.surface_triangles
+    triangles = rest[faces]
+    area_normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]) / 2
+    orientation = np.sum(area_normals * (triangles.mean(axis=1) - rest.mean(axis=0)), axis=1)
+    area_normals *= np.sign(orientation)[:, None]
+    force = np.zeros_like(rest)
+    np.add.at(force[:, 2], faces, (-E * STRAIN * area_normals[:, 2] / 3)[:, None])
+
+    pos = box.init_positions.clone()
+    pos[:, 2] += STRAIN * (pos[:, 2] - HEIGHT)
+    box.set_position(pos)
+    scene.step()
+
+    velocity = tensor_to_array(box.get_state().vel)
+    assert_allclose(velocity, DT * force / mass[:, None], atol=5e-7 if precision == "32" else 1e-12)
+    assert_allclose((mass[:, None] * velocity).sum(axis=-2), 0.0, atol=5e-8 if precision == "32" else 1e-14)
