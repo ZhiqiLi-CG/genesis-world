@@ -1,9 +1,12 @@
 import math
 
-import igl
 import numpy as np
 import pytest
 import torch
+
+import igl
+
+import quadrants as qd
 
 import genesis as gs
 from genesis.utils.misc import tensor_to_array
@@ -805,3 +808,84 @@ def test_elastic_acceleration(
     if not use_implicit_solver:
         assert_allclose(velocity, DT * force / mass[:, None], atol=5e-7 if precision == "32" else 1e-12)
     assert_allclose((mass[:, None] * velocity).sum(axis=-2), 0.0, atol=5e-8 if precision == "32" else 1e-14)
+
+
+@pytest.mark.required
+@pytest.mark.parametrize("precision", ["32", "64"])
+@pytest.mark.parametrize("n_envs", [0, 2])
+def test_elastic_stored_energy(n_envs, precision, show_viewer):
+    SIDE = 0.125
+    HEIGHT = 0.5
+    E = 1e5
+    NU = 0.25
+
+    scene = gs.Scene(
+        sim_options=gs.options.SimOptions(
+            gravity=(0.0, 0.0, 0.0),
+        ),
+        fem_options=gs.options.FEMOptions(
+            damping=0.0,
+            floor_height=-10.0,
+        ),
+        show_viewer=show_viewer,
+    )
+    material = gs.materials.FEM.Elastic(
+        E=E,
+        nu=NU,
+        model="stable_neohookean",
+    )
+    # FEM surfaces support only the default visual mode
+    box = scene.add_entity(
+        morph=gs.morphs.Box(
+            pos=(0.0, 0.0, HEIGHT),
+            size=(SIDE, SIDE, SIDE),
+        ),
+        material=material,
+    )
+    scene.build(n_envs=n_envs)
+
+    # The constitutive callback runs in Quadrants scope. Stored energy has no scene-level getter.
+    @qd.kernel
+    def evaluate_energy(deformation: qd.types.ndarray(), energy: qd.types.ndarray(), compute_energy: qd.template()):
+        for i_b, i_e in qd.ndrange(deformation.shape[0], deformation.shape[1]):
+            F = qd.Matrix.zero(gs.qd_float, 3, 3)
+            for i, j in qd.static(qd.ndrange(3, 3)):
+                F[i, j] = deformation[i_b, i_e, i, j]
+            energy[i_b, i_e] = compute_energy(
+                material.mu, material.lam, F.determinant(), F, 0.0, qd.Vector([0.0, 0.0, 1.0]), i_e, i_b
+            )
+
+    rest = tensor_to_array(box.init_positions)
+    reference_tets = rest[box.elems]
+    reference_edges = (reference_tets[:, :3] - reference_tets[:, 3, None]).transpose(0, 2, 1)
+    volumes = np.abs(np.linalg.det(reference_edges)) / 6
+    energy = np.empty((max(n_envs, 1), box.n_elements), dtype=gs.np_float)
+    evaluate_energy(np.tile(np.eye(3), (*energy.shape, 1, 1)), energy, material.compute_energy)
+    rest_energy = energy.copy()
+    mu = E / (2 * (1 + NU))
+    lam = E * NU / ((1 + NU) * (1 - 2 * NU))
+
+    for shear, stretch in ((1.0, 1.0), (2.0, 1.0), (0.0, 0.5), (0.0, 1.25)):
+        pos = box.init_positions.clone()
+        pos[:, 2] -= HEIGHT
+        pos *= stretch
+        pos[:, 0] += shear * pos[:, 2]
+        pos[:, 2] += HEIGHT
+        box.set_position(pos)
+        current_tets = tensor_to_array(box.get_state().pos)[:, box.elems]
+        current_edges = (current_tets[:, :, :3] - current_tets[:, :, 3, None]).transpose(0, 1, 3, 2)
+        deformation = current_edges @ np.linalg.inv(reference_edges)
+        evaluate_energy(np.ascontiguousarray(deformation), energy, material.compute_energy)
+
+        # Smith et al. (2018), supplement section 2.5, with the physical small-strain Lame coefficients
+        if shear > 0.0:
+            expected_density = 2 * mu / 3 * (shear**2 - np.log1p(shear**2 / 4))
+        else:
+            expected_density = 2 * mu / 3 * (3 * (stretch**2 - 1) - np.log((3 * stretch**2 + 1) / 4))
+            expected_density += (lam + 5 * mu / 6) / 2 * (stretch**3 - 1) ** 2 - mu * (stretch**3 - 1)
+        assert_allclose(
+            ((energy - rest_energy) * volumes).sum(axis=-1),
+            SIDE**3 * expected_density,
+            rtol=2e-6 if precision == "32" else 1e-12,
+            atol=1e-7,
+        )

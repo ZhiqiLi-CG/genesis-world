@@ -168,11 +168,13 @@ class Elastic(Base):
 
     @qd.func
     def _compute_energy_stable_neohookean(self, mu, lam, J, F, actu, m_dir, i_e, i_b):
-        _lambda = lam + mu
-        _alpha = 1.0 + mu / _lambda
+        # The regularized potential uses rescaled Lame coefficients to recover the physical small-strain moduli
+        mu_model = 4.0 * mu / 3.0
+        lam_model = lam + 5.0 * mu / 6.0
         Ic = F.norm_sqr()
-        Jminus1 = J - _alpha
-        energy = 0.5 * (mu * (Ic - 3.0) + _lambda * Jminus1**2)
+        Jminus1 = J - 1.0
+        energy = 0.5 * mu_model * (Ic - 3.0 - qd.log((Ic + 1.0) / 4.0))
+        energy += 0.5 * lam_model * Jminus1**2 - mu * Jminus1
         return energy
 
     # ─── Linear Corotated model ───
