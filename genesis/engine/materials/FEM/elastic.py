@@ -151,8 +151,11 @@ class Elastic(Base):
         dJdF1 = F[:, 2].cross(F[:, 0])
         dJdF2 = F[:, 0].cross(F[:, 1])
         dJdF = qd.Matrix.cols([dJdF0, dJdF1, dJdF2])
-        alpha = 1 + 0.75 * mu / lam
-        stress = mu * (1 - 1 / (IC + 1)) * F + lam * (J - alpha) * dJdF
+        # Remap the regularized model's coefficients to recover the physical Lame parameters at rest
+        # (Smith et al. 2018, Stable Neo-Hookean Flesh Simulation, supplement, Eq. 16)
+        mu_model = 4.0 * mu / 3.0
+        lam_model = lam + 5.0 * mu / 6.0
+        stress = mu_model * (1 - 1 / (IC + 1)) * F + (lam_model * (J - 1) - mu) * dJdF
         return stress
 
     @qd.func

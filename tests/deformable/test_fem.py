@@ -703,10 +703,24 @@ def test_implicit_sap_coupler_hard_constraint_and_collision(show_viewer):
 @pytest.mark.parametrize("precision", ["32", "64"])
 @pytest.mark.parametrize("n_envs", [0, 2])
 @pytest.mark.parametrize(
-    "use_implicit_solver, n_newton_iterations, n_linesearch_iterations", [(False, 1, 0), (True, 1, 0), (True, 3, 5)]
+    "material_model, nu, use_implicit_solver, n_newton_iterations, n_linesearch_iterations",
+    [
+        ("linear", 0.0, False, 1, 0),
+        ("linear", 0.0, True, 1, 0),
+        ("linear", 0.0, True, 3, 5),
+        ("stable_neohookean", 0.0, False, 1, 0),
+        ("stable_neohookean", 0.25, False, 1, 0),
+    ],
 )
 def test_elastic_acceleration(
-    n_envs, precision, use_implicit_solver, n_newton_iterations, n_linesearch_iterations, show_viewer
+    material_model,
+    nu,
+    n_envs,
+    precision,
+    use_implicit_solver,
+    n_newton_iterations,
+    n_linesearch_iterations,
+    show_viewer,
 ):
     DT = 2e-5
     HEIGHT = 0.25
@@ -743,8 +757,9 @@ def test_elastic_acceleration(
         ),
         material=gs.materials.FEM.Elastic(
             E=E,
-            nu=0.0,
+            nu=nu,
             rho=RHO,
+            model=material_model,
         ),
     )
     scene.build(n_envs=n_envs)
@@ -761,14 +776,25 @@ def test_elastic_acceleration(
     mass = np.zeros(box.n_vertices)
     np.add.at(mass, box.elems, RHO * volumes[:, None] / 4)
 
-    # Constant axial stress gives the exact nodal force by integrating traction over the boundary.
+    # Uniform strain gives the exact nodal force by integrating traction over the reference boundary
     faces = box.surface_triangles
     triangles = rest[faces]
     area_normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0]) / 2
     orientation = np.sum(area_normals * (triangles.mean(axis=1) - rest.mean(axis=0)), axis=1)
     area_normals *= np.sign(orientation)[:, None]
+    stress = np.diag([0.0, 0.0, E * STRAIN])
+    if material_model == "stable_neohookean":
+        # Differentiate the regularized strain energy independently of the simulator's stress implementation
+        deformation = torch.diag(torch.tensor([1.0, 1.0, 1.0 + STRAIN], dtype=gs.tc_float)).requires_grad_()
+        shear_modulus = E / (2 * (1 + nu))
+        bulk_coefficient = E * nu / ((1 + nu) * (1 - 2 * nu)) + 5 * shear_modulus / 6
+        invariant = (deformation**2).sum()
+        volume_change = torch.linalg.det(deformation) - 1
+        energy = 2 * shear_modulus / 3 * (invariant - 3 - torch.log((invariant + 1) / 4))
+        energy += bulk_coefficient / 2 * volume_change**2 - shear_modulus * volume_change
+        stress = tensor_to_array(torch.autograd.grad(energy, deformation)[0])
     force = np.zeros_like(rest)
-    np.add.at(force[:, 2], faces, (-E * STRAIN * area_normals[:, 2] / 3)[:, None])
+    np.add.at(force, faces, (-area_normals @ stress.T / 3)[:, None, :])
 
     pos = box.init_positions.clone()
     pos[:, 2] += STRAIN * (pos[:, 2] - HEIGHT)
