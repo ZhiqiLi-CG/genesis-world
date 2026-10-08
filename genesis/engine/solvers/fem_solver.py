@@ -130,7 +130,10 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
         )
 
         element_state_v_energy = qd.types.struct(
-            inertia=gs.qd_vec3,  # inertia for the vertex
+            # Inertial displacement target
+            inertia=gs.qd_vec3,
+            # Displacement from the beginning of the substep
+            displacement=gs.qd_vec3,
             force=gs.qd_vec3,
         )
 
@@ -152,7 +155,7 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
         )
 
         linesearch_state_v = qd.types.struct(
-            x_prev=gs.qd_vec3,  # solution vector
+            displacement_prev=gs.qd_vec3,
         )
 
         # construct field
@@ -502,26 +505,20 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
 
     @qd.kernel
     def init_pos_and_inertia(self, f: qd.i32):
-        dt2 = self.substep_dt**2
+        # Keep substep displacements separate from world positions to preserve small velocity increments
         for i_v, i_b in qd.ndrange(self.n_vertices, self._B):
+            self.elements_v_energy[i_b, i_v].inertia = self.substep_dt * (
+                self.elements_v[f, i_v, i_b].vel + self.substep_dt * self._gravity[i_b]
+            )
+            self.elements_v_energy[i_b, i_v].displacement = qd.Vector.zero(gs.qd_float, 3)
+            self.elements_v[f + 1, i_v, i_b].pos = self.elements_v[f, i_v, i_b].pos
             if qd.static(self._enable_vertex_constraints):
                 if self.vertex_constraints.is_constrained[i_v, i_b]:
                     self.elements_v[f + 1, i_v, i_b].pos = self.vertex_constraints.target_pos[i_v, i_b]
-                    self.elements_v_energy[i_b, i_v].inertia = self.vertex_constraints.target_pos[i_v, i_b]
-                else:
-                    self.elements_v_energy[i_b, i_v].inertia = (
-                        self.elements_v[f, i_v, i_b].pos
-                        + self.elements_v[f, i_v, i_b].vel * self.substep_dt
-                        + self._gravity[i_b] * dt2
+                    self.elements_v_energy[i_b, i_v].displacement = (
+                        self.vertex_constraints.target_pos[i_v, i_b] - self.elements_v[f, i_v, i_b].pos
                     )
-                    self.elements_v[f + 1, i_v, i_b].pos = self.elements_v[f, i_v, i_b].pos
-            else:
-                self.elements_v_energy[i_b, i_v].inertia = (
-                    self.elements_v[f, i_v, i_b].pos
-                    + self.elements_v[f, i_v, i_b].vel * self.substep_dt
-                    + self._gravity[i_b] * dt2
-                )
-                self.elements_v[f + 1, i_v, i_b].pos = self.elements_v[f, i_v, i_b].pos
+                    self.elements_v_energy[i_b, i_v].inertia = self.elements_v_energy[i_b, i_v].displacement
 
     @qd.func
     def _compute_ele_J_F(self, f: qd.i32, i_e: qd.i32, i_b: qd.i32):
@@ -629,9 +626,8 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
 
                 x_diff = qd.Vector.zero(gs.qd_float, 12)
                 for i in qd.static(range(4)):
-                    x_diff[i * 3 : i * 3 + 3] = (
-                        self.elements_v[f + 1, i_vs[i], i_b].pos - self.elements_v[f, i_vs[i], i_b].pos
-                    )
+                    i_v = i_vs[i]
+                    x_diff[i * 3 : i * 3 + 3] = self.elements_v_energy[i_b, i_v].displacement
                 St_x_diff = qd.Vector.zero(gs.qd_float, 9)
                 for i, j in qd.static(qd.ndrange(3, 4)):
                     St_x_diff[i * 3 : i * 3 + 3] += S[j, i] * x_diff[j * 3 : j * 3 + 3]
@@ -655,8 +651,8 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
             if not self.batch_active[i_b]:
                 continue
             self.elements_v_energy[i_b, i_v].force = -self.elements_v_info[i_v].mass_over_dt2 * (
-                (self.elements_v[f + 1, i_v, i_b].pos - self.elements_v_energy[i_b, i_v].inertia)
-                + (self.elements_v[f + 1, i_v, i_b].pos - self.elements_v[f, i_v, i_b].pos) * damping_alpha_dt
+                (self.elements_v_energy[i_b, i_v].displacement - self.elements_v_energy[i_b, i_v].inertia)
+                + self.elements_v_energy[i_b, i_v].displacement * damping_alpha_dt
             )
             self.pcg_state_v[i_b, i_v].diag3x3 = qd.Matrix.zero(gs.qd_float, 3, 3)
             for i in qd.static(range(3)):
@@ -682,9 +678,8 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
             if self._damping_beta > gs.EPS:
                 x_diff = qd.Vector.zero(gs.qd_float, 12)
                 for i in qd.static(range(4)):
-                    x_diff[i * 3 : i * 3 + 3] = (
-                        self.elements_v[f + 1, i_vs[i], i_b].pos - self.elements_v[f, i_vs[i], i_b].pos
-                    )
+                    i_v = i_vs[i]
+                    x_diff[i * 3 : i * 3 + 3] = self.elements_v_energy[i_b, i_v].displacement
                 St_x_diff = qd.Vector.zero(gs.qd_float, 9)
                 for i, j in qd.static(qd.ndrange(3, 4)):
                     St_x_diff[i * 3 : i * 3 + 3] += S[j, i] * x_diff[j * 3 : j * 3 + 3]
@@ -857,9 +852,9 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
         for i_b, i_v in qd.ndrange(self._B, self.n_vertices):
             if not self.batch_linesearch_active[i_b]:
                 continue
-            diff = self.elements_v[f + 1, i_v, i_b].pos - self.elements_v_energy[i_b, i_v].inertia
+            diff = self.elements_v_energy[i_b, i_v].displacement - self.elements_v_energy[i_b, i_v].inertia
             self.linesearch_state[i_b].prev_energy += 0.5 * self.elements_v_info[i_v].mass_over_dt2 * diff.dot(diff)
-            self.linesearch_state_v[i_b, i_v].x_prev = self.elements_v[f + 1, i_v, i_b].pos
+            self.linesearch_state_v[i_b, i_v].displacement_prev = self.elements_v_energy[i_b, i_v].displacement
             self.linesearch_state[i_b].m -= self.pcg_state_v[i_b, i_v].x.dot(self.elements_v_energy[i_b, i_v].force)
         # Elastic
         for i_b, i_e in qd.ndrange(self._B, self.n_elements):
@@ -878,16 +873,19 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
         for i_b, i_v in qd.ndrange(self._B, self.n_vertices):
             if not self.batch_linesearch_active[i_b]:
                 continue
-            self.elements_v[f + 1, i_v, i_b].pos = (
-                self.linesearch_state_v[i_b, i_v].x_prev
+            self.elements_v_energy[i_b, i_v].displacement = (
+                self.linesearch_state_v[i_b, i_v].displacement_prev
                 + self.linesearch_state[i_b].step_size * self.pcg_state_v[i_b, i_v].x
             )
-            diff = self.elements_v[f + 1, i_v, i_b].pos - self.elements_v_energy[i_b, i_v].inertia
+            self.elements_v[f + 1, i_v, i_b].pos = (
+                self.elements_v[f, i_v, i_b].pos + self.elements_v_energy[i_b, i_v].displacement
+            )
+            diff = self.elements_v_energy[i_b, i_v].displacement - self.elements_v_energy[i_b, i_v].inertia
             self.linesearch_state[i_b].energy += 0.5 * self.elements_v_info[i_v].mass_over_dt2 * diff.dot(diff)
             # damping
             if self._damping_alpha > 0.0:
                 damping_alpha_dt = self._damping_alpha * self._substep_dt
-                diff = self.elements_v[f + 1, i_v, i_b].pos - self.elements_v[f, i_v, i_b].pos
+                diff = self.elements_v_energy[i_b, i_v].displacement
                 self.linesearch_state[i_b].energy += (
                     0.5 * self.elements_v_info[i_v].mass_over_dt2 * diff.dot(diff) * damping_alpha_dt
                 )
@@ -918,7 +916,10 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
         for i_b, i_v in qd.ndrange(self._B, self.n_vertices):
             if not self.batch_active[i_b]:
                 continue
-            self.elements_v[f + 1, i_v, i_b].pos = self.elements_v[f + 1, i_v, i_b].pos + self.pcg_state_v[i_b, i_v].x
+            self.elements_v_energy[i_b, i_v].displacement += self.pcg_state_v[i_b, i_v].x
+            self.elements_v[f + 1, i_v, i_b].pos = (
+                self.elements_v[f, i_v, i_b].pos + self.elements_v_energy[i_b, i_v].displacement
+            )
 
     def linesearch(self, f: qd.i32):
         """
@@ -958,9 +959,7 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
     def setup_pos_vel(self, f: qd.i32):
         for i_v, i_b in qd.ndrange(self.n_vertices, self._B):
             # set pos and vel
-            self.elements_v[f + 1, i_v, i_b].vel = (
-                self.elements_v[f + 1, i_v, i_b].pos - self.elements_v[f, i_v, i_b].pos
-            ) / self.substep_dt
+            self.elements_v[f + 1, i_v, i_b].vel = self.elements_v_energy[i_b, i_v].displacement / self.substep_dt
 
     # ------------------------------------------------------------------------------------
     # ------------------------------------ stepping --------------------------------------

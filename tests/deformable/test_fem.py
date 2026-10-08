@@ -702,18 +702,33 @@ def test_implicit_sap_coupler_hard_constraint_and_collision(show_viewer):
 @pytest.mark.required
 @pytest.mark.parametrize("precision", ["32", "64"])
 @pytest.mark.parametrize("n_envs", [0, 2])
-def test_explicit_elastic_acceleration(n_envs, precision, show_viewer):
+@pytest.mark.parametrize(
+    "use_implicit_solver, n_newton_iterations, n_linesearch_iterations", [(False, 1, 0), (True, 1, 0), (True, 3, 5)]
+)
+def test_elastic_acceleration(
+    n_envs, precision, use_implicit_solver, n_newton_iterations, n_linesearch_iterations, show_viewer
+):
     DT = 2e-5
     HEIGHT = 0.25
     BOX_SIZE = 0.125
     E = 1e5
     RHO = 1000.0
     STRAIN = 1 / 64
+    GRAVITY = (1.0, -2.0, -9.81)
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=DT,
-            gravity=(0.0, 0.0, 0.0),
+            gravity=GRAVITY,
+        ),
+        fem_options=gs.options.FEMOptions(
+            use_implicit_solver=use_implicit_solver,
+            n_newton_iterations=n_newton_iterations,
+            n_linesearch_iterations=n_linesearch_iterations,
+            # Resolve the linear solve below the momentum conservation tolerance
+            pcg_threshold=1e-20,
+            damping_alpha=0.0,
+            damping_beta=0.0,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(0.3, 0.3, 0.4),
@@ -733,6 +748,12 @@ def test_explicit_elastic_acceleration(n_envs, precision, show_viewer):
         ),
     )
     scene.build(n_envs=n_envs)
+
+    # Small substep displacements can be below the resolution of world positions in single precision
+    scene.step()
+    assert_allclose(box.get_state().vel, DT * np.array(GRAVITY), atol=1e-7 if precision == "32" else 1e-9)
+    scene.fem_solver.set_gravity((0.0, 0.0, 0.0))
+    box.set_velocity((0.0, 0.0, 0.0))
 
     rest = tensor_to_array(box.init_positions)
     tetrahedra = rest[box.elems]
@@ -755,5 +776,6 @@ def test_explicit_elastic_acceleration(n_envs, precision, show_viewer):
     scene.step()
 
     velocity = tensor_to_array(box.get_state().vel)
-    assert_allclose(velocity, DT * force / mass[:, None], atol=5e-7 if precision == "32" else 1e-12)
+    if not use_implicit_solver:
+        assert_allclose(velocity, DT * force / mass[:, None], atol=5e-7 if precision == "32" else 1e-12)
     assert_allclose((mass[:, None] * velocity).sum(axis=-2), 0.0, atol=5e-8 if precision == "32" else 1e-14)
