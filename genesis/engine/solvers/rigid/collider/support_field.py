@@ -146,9 +146,8 @@ def _func_support_world(
 ):
     """Support position for a world direction.
 
-    The vertex comes from the precomputed support table, or from an exhaustive scan of the mesh vertices when
-    'exhaustive' is set: the sampled table is approximate and may return a different vertex of a tied flat face,
-    while the scan is exact at a cost linear in the vertex count.
+    For convex meshes, the support table seeds a vertex adjacency search. With 'exhaustive', a full scan selects
+    the first maximum instead, at a cost linear in the vertex count. Nonconvex meshes use the sampled table.
     """
     v = qd.Vector.zero(gs.qd_float, 3)
     v_ = qd.Vector.zero(gs.qd_float, 3)
@@ -159,7 +158,7 @@ def _func_support_world(
         v = gu.qd_transform_by_trans_quat(v_, pos, quat)
     else:
         d_mesh = gu.qd_transform_by_quat_fast(d, gu.qd_inv_quat(quat))
-        v_, vid = _func_support_mesh(i_g, d_mesh, collider_info)
+        v_, vid = _func_support_mesh(i_g, d_mesh, dyn_info, collider_info)
         v = gu.qd_transform_by_trans_quat_fast(v_, pos, quat)
     return v, v_, vid
 
@@ -190,7 +189,7 @@ def _func_direction_grid_coords(d_mesh, support_res):
 
 
 @qd.func
-def _func_support_mesh(i_g, d_mesh, collider_info: array_class.ColliderInfo):
+def _func_support_mesh(i_g, d_mesh, dyn_info: array_class.DynInfo, collider_info: array_class.ColliderInfo):
     """
     support point at mesh frame coordinate.
     """
@@ -224,6 +223,26 @@ def _func_support_mesh(i_g, d_mesh, collider_info: array_class.ColliderInfo):
             v = pos
             dot_max = dot
             vid = _vid
+
+    if dyn_info.geoms.is_convex[i_g]:
+        # A vertex normal cone can cross a sampled cell while missing all four corners. On a convex mesh, ascending
+        # adjacent vertices maximizes the linear support objective. Strict ascent preserves ties and prevents cycles.
+        i_v_start = dyn_info.geoms.vert_start[i_g]
+        i_v = i_v_start + vid
+        for _ in range(dyn_info.geoms.vert_end[i_g] - i_v_start):
+            i_v_prev = i_v
+            i_n_start = collider_info.vert_neighbor_start[i_v_prev]
+            for i_n in range(i_n_start, i_n_start + collider_info.vert_n_neighbors[i_v_prev]):
+                i_v_next = collider_info.vert_neighbors[i_n]
+                pos = dyn_info.verts.init_pos[i_v_next]
+                dot = pos.dot(d_mesh)
+                if dot > dot_max:
+                    v = pos
+                    dot_max = dot
+                    i_v = i_v_next
+            if i_v == i_v_prev:
+                break
+        vid = i_v - i_v_start
 
     return v, vid
 

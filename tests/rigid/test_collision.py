@@ -58,12 +58,13 @@ def test_edge_cases(gs_sim, mode):
 @pytest.mark.slow  # ~200s
 @pytest.mark.required
 @pytest.mark.parametrize("backend", [gs.cpu])
+@pytest.mark.parametrize("precision", ["32", "64"])
 def test_plane_convex(show_viewer, tol):
     for morph in (
         gs.morphs.Plane(),
         gs.morphs.Box(
-            pos=(0.5, 0.0, -0.5),
-            size=(1.0, 1.0, 1.0),
+            pos=(0.5, 0.0, -0.005),
+            size=(1.0, 1.0, 0.01),
             fixed=True,
         ),
     ):
@@ -79,7 +80,7 @@ def test_plane_convex(show_viewer, tol):
             show_FPS=False,
         )
 
-        scene.add_entity(morph)
+        floor = scene.add_entity(morph)
 
         asset_path = get_hf_dataset(pattern="image_0000_segmented.glb")
         asset = scene.add_entity(
@@ -93,7 +94,38 @@ def test_plane_convex(show_viewer, tol):
             visualize_contact=True,
         )
 
+        transform = trimesh.transformations.euler_matrix(0.37, 0.81, 0.29)
+        direction = np.array([-0.002, -0.002, 1.0])
+        direction /= np.linalg.norm(direction)
+        quat = trimesh.transformations.quaternion_from_matrix(
+            trimesh.geometry.align_vectors(transform[:3, :3] @ direction, [0.0, 0.0, -1.0])
+        )
+        mesh_entities = []
+        for i_e, (scale, thickness) in enumerate(product((1.0, 0.1), (0.0003, 0.03))):
+            extents = scale * np.array([0.09, 0.063, thickness])
+            mesh = trimesh.creation.box(extents=extents)
+            mesh.apply_transform(transform)
+            support = np.abs(direction) @ (extents / 2)
+            depth = scale * 0.00008
+            mesh_entity = scene.add_entity(
+                morph=gs.morphs.MeshSet(
+                    files=(mesh,),
+                    pos=(0.2 + 0.2 * i_e, -0.3, support - depth),
+                    quat=quat,
+                    decimate=False,
+                    convexify=True,
+                    align=False,
+                ),
+                vis_mode="collision",
+            )
+            mesh_entities.append((mesh_entity, depth))
+
         scene.build()
+        scene.step()
+        for mesh_entity, depth in mesh_entities:
+            contacts = mesh_entity.get_contacts(with_entity=floor)
+            assert len(contacts["position"]) > 0
+            assert_allclose(contacts["position"][..., 2].min(), -depth / 2, atol=depth * 1e-4, rtol=0.0)
 
         for i in range(500):
             scene.step()
