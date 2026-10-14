@@ -579,16 +579,12 @@ def _postprocess_collision_geoms_impl(
         for g_info in g_infos
     )
 
-    # Weld coincident vertices of non-convex collision meshes onto a separate copy. Formats that store unshared
-    # per-face vertices (notably STL) yield a vertex soup whose duplicates differ only by float rounding; the
-    # downstream exact dedup at geom build only partially fuses them, leaving a degraded (sliver) mesh that corrupts
-    # the SDF. The convex path skips this (the hull / decomposition replaces the surface anyway). The collision mesh
-    # may be the very same trimesh as the visual geom, so the weld must not be done in place: only the collision geom
-    # is swapped for the welded copy, leaving the visual vertices untouched. Already-shared meshes (OBJ, glTF) weld to
-    # no fewer vertices and keep their original geom.
+    # Weld vertex soups on a collision-only copy to close rounding gaps that corrupt the signed distance field (SDF).
+    # Closed meshes preserve their topology: welding touching components can create non-manifold edges and corrupt
+    # their inertia. Convexification replaces the surface and handles its own vertex merging.
     if not is_authored and not convexify:
         for g_info in g_infos:
-            if g_info["type"] != gs.GEOM_TYPE.MESH:
+            if g_info["type"] != gs.GEOM_TYPE.MESH or g_info["mesh"].is_watertight:
                 continue
             welded = g_info["mesh"].trimesh.copy()
             welded.merge_vertices()

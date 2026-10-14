@@ -257,7 +257,8 @@ def test_urdf_yup(file_meshes_are_zup, mesh_urdf, show_viewer):
 
 @pytest.mark.required
 @pytest.mark.parametrize("mesh_file", ["1707/base_link.stl"])
-def test_urdf_mesh_processing(mesh_path, mesh_urdf, show_viewer):
+@pytest.mark.parametrize("watertighten", [None, 5])
+def test_urdf_mesh_processing(mesh_path, mesh_urdf, watertighten, show_viewer):
     scene = gs.Scene(
         show_viewer=show_viewer,
         show_FPS=False,
@@ -272,6 +273,40 @@ def test_urdf_mesh_processing(mesh_path, mesh_urdf, show_viewer):
             file=mesh_urdf,
         ),
     )
+
+    for offset, is_vertex_soup in (
+        ((0.1, 0.1, 0.0), False),
+        ((0.11, 0.11, 0.0), False),
+        ((0.1, 0.1, 0.1), False),
+        ((0.11, 0.11, 0.0), True),
+    ):
+        box = trimesh.creation.box(extents=(0.1, 0.1, 0.1))
+        box_shifted = box.copy()
+        box_shifted.apply_translation(offset)
+        mesh = trimesh.util.concatenate((box, box_shifted))
+        if is_vertex_soup:
+            vertices = mesh.vertices[mesh.faces].reshape((-1, 3))
+            mesh = trimesh.Trimesh(vertices=vertices, faces=np.arange(len(vertices)).reshape((-1, 3)), process=False)
+        entity = scene.add_entity(
+            morph=gs.morphs.MeshSet(
+                files=(mesh,),
+                convexify=False,
+                decimate=False,
+                watertighten=watertighten,
+            ),
+            material=gs.materials.Rigid(
+                rho=600.0,
+            ),
+        )
+        mass = 600.0 * 2 * 0.1**3
+        inertia = mass * 0.1**2 / 6
+        inertia_transverse = inertia + mass * np.dot(offset, offset) / 4
+        assert_allclose(entity.base_link.desc.mass, mass, rtol=1e-6)
+        assert_allclose(
+            np.linalg.eigvalsh(entity.base_link.desc.inertia),
+            (inertia, inertia_transverse, inertia_transverse),
+            atol=1e-8,
+        )
 
     tmesh_obj_col = obj.geoms[0].mesh.trimesh
     tmesh_obj_vis = obj.vgeoms[0].vmesh.trimesh
