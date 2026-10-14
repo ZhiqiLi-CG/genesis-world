@@ -280,8 +280,8 @@ def test_overlap(show_viewer):
             gravity=(0, 0, 0),
         ),
         viewer_options=gs.options.ViewerOptions(
-            camera_pos=(0.0, 0.3, 0.15),
-            camera_lookat=(0.0, 0.0, 0.0),
+            camera_pos=(2.0, -3.0, 2.0),
+            camera_lookat=(0.0, 1.5, 0.0),
         ),
         show_viewer=show_viewer,
         show_FPS=False,
@@ -319,9 +319,40 @@ def test_overlap(show_viewer):
                 ),
             )
         )
+    profile = np.array(((0, -0.4), (0.1, -0.4), (0.1, -0.2), (0.06, 0), (0.1, 0.2), (0.1, 0.4), (0, 0.4)))
+    mesh = trimesh.creation.revolve(profile, sections=64)
+    side_contact_pairs = []
+    for i_pair, euler in enumerate(((0, 0, 0), (35, 20, 10))):
+        quat = gu.xyz_to_quat(np.radians(euler))
+        offset = gu.transform_by_quat(np.array((0.199, 0.0, 0.07)), quat)
+        position = np.array((0.0, 2.0 + 1.5 * i_pair, 0.0))
+        entities = []
+        for is_fixed in (True, False):
+            entities.append(
+                scene.add_entity(
+                    morph=gs.morphs.MeshSet(
+                        pos=position if is_fixed else position + offset,
+                        quat=quat,
+                        fixed=is_fixed,
+                        decimate=False,
+                        watertighten=None,
+                        convexify=False,
+                        files=(mesh.copy(),),
+                    ),
+                    material=gs.materials.Rigid(
+                        sdf_cell_size=0.003,
+                        sdf_max_res=192,
+                    ),
+                )
+            )
+        side_contact_pairs.append((entities, quat))
     scene.build()
     a.set_dofs_velocity(+1.0, dofs_idx_local=0)
     b.set_dofs_velocity(-1.0, dofs_idx_local=0)
+    for entities, quat in side_contact_pairs:
+        entities[1].set_dofs_velocity(
+            gu.transform_by_quat(np.array((-1.0, 0.0, 0.0)), quat), dofs_idx_local=slice(None, 3)
+        )
 
     geom = apples[0].geoms[0]
     apples_overlap = 1e-3
@@ -334,10 +365,18 @@ def test_overlap(show_viewer):
     apples[1].set_pos(apples_pos_ref[1])
 
     total_energy_history = []
-    for _ in range(200):
+    for i_step in range(200):
         total_energy = tensor_to_array(a.get_total_energy() + b.get_total_energy())
         total_energy_history.append(total_energy)
         scene.step()
+        if i_step == 0:
+            for entities, quat in side_contact_pairs:
+                normals = tensor_to_array(entities[1].get_contacts(with_entity=entities[0])["normal"])
+                axis = gu.transform_by_quat(np.array((0.0, 0.0, 1.0)), quat)
+                assert len(normals) > 0
+                assert_allclose(np.linalg.norm(normals, axis=-1), 1.0, atol=1e-5)
+                # The contacting cylindrical side faces are invariant along the axis, even with an axial offset.
+                assert_allclose(normals @ axis, 0.0, atol=1e-5)
 
     # FIXME: The total energy should be not strictly decreasing but is not... relaxing the condition
     # assert (np.diff(total_energy_history, axis=0) < 0.0)

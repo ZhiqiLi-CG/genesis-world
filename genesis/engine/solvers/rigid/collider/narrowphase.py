@@ -411,7 +411,6 @@ def func_add_polytope_vertex_contacts_sdf(
                             # contact ring.
                             is_enclosed_regime = True
                     else:
-                        normal_center = closing_normal
                         # Approach depth along the closing axis, measured on the SDFs: bisect the center-to-center
                         # segment for each body's own surface crossing (both centers are inside their own material
                         # here, per the enclosure tests), then overlap = depth_a + depth_b - center distance. This is
@@ -448,6 +447,11 @@ def func_add_polytope_vertex_contacts_sdf(
                             collider_info,
                         )
                         approach_depth_pair = depth_a + depth_b - seg_len
+                        # Side contacts can overlap away from the center line while the material on that line is
+                        # separated. The axis recovery has no overlap to resolve there, so retain the SDF normals.
+                        is_closing_regime = approach_depth_pair > 0.0
+                        if is_closing_regime:
+                            normal_center = closing_normal
             else:
                 is_closing_regime = False
         for k in range(n_max):
