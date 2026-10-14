@@ -464,17 +464,18 @@ class FEMSolver(GravityMixin, TimeBasedMixin, Solver):
                     )
 
             verts = self.elements_i[i_e].el2v
-            mass_scaled = self.elements_i[i_e].mass_scaled
             H_scaled = -V_scaled * stress @ B.transpose()
             for k in qd.static(range(3)):
+                i_v = verts[k]
                 force_scaled = qd.Vector([H_scaled[j, k] for j in range(3)])
 
                 # store so forces can be read out
-                self.elements_v_energy[i_b, verts[k]].force = force_scaled
+                self.elements_v_energy[i_b, i_v].force = force_scaled
 
-                dv = self.substep_dt * force_scaled / mass_scaled
-                self.elements_v[f + 1, verts[k], i_b].vel += dv
-                self.elements_v[f + 1, verts[3], i_b].vel -= dv
+                # Each vertex carries the lumped mass of all its incident tetrahedra
+                impulse = self.substep_dt * force_scaled / self._vol_scale
+                self.elements_v[f + 1, i_v, i_b].vel += impulse * self.elements_v_info[i_v].mass_inv
+                self.elements_v[f + 1, i_v3, i_b].vel -= impulse * self.elements_v_info[i_v3].mass_inv
 
     @qd.kernel
     def apply_uniform_force(self, f: qd.i32):

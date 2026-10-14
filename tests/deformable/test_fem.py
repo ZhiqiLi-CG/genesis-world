@@ -13,6 +13,64 @@ from ..utils.assets import get_hf_dataset
 
 
 @pytest.mark.required
+@pytest.mark.parametrize("precision", ["32", "64"])
+@pytest.mark.parametrize("maxvolume", [2e-6, 4e-7])
+def test_explicit_uniform_strain(maxvolume, show_viewer):
+    dt = 1e-5
+    young_modulus = 2e5
+    poisson_ratio = 0.25
+    density = 1200.0
+
+    scene = gs.Scene(
+        sim_options=gs.options.SimOptions(
+            dt=dt,
+            gravity=(0.0, 0.0, 0.0),
+        ),
+        show_viewer=show_viewer,
+    )
+    box = scene.add_entity(
+        morph=gs.morphs.Box(
+            pos=(0.0, 0.0, 0.2),
+            size=(0.08, 0.1, 0.12),
+            nobisect=False,
+            maxvolume=maxvolume,
+        ),
+        material=gs.materials.FEM.Elastic(
+            E=young_modulus,
+            nu=poisson_ratio,
+            rho=density,
+        ),
+    )
+    scene.build(n_envs=2)
+
+    rest = tensor_to_array(box.init_positions)
+    elements = tensor_to_array(box.get_el2v())
+    tetrahedra = rest[elements]
+    volumes = np.abs(np.linalg.det(tetrahedra[:, :3] - tetrahedra[:, 3, None])) / 6
+    mass = np.zeros(box.n_vertices)
+    np.add.at(mass, elements, density * volumes[:, None] / 4)
+    assert_allclose(mass.sum(), density * 0.08 * 0.1 * 0.12, rtol=1e-6)
+
+    lame_mu = young_modulus / (2 * (1 + poisson_ratio))
+    lame_lambda = young_modulus * poisson_ratio / ((1 + poisson_ratio) * (1 - 2 * poisson_ratio))
+    stress = np.diag((2 * lame_mu + lame_lambda, lame_lambda, lame_lambda))
+
+    strain = torch.tensor((0.02, -0.01), dtype=gs.tc_float, device=gs.device)
+    pos = box.init_positions.repeat(2, 1, 1)
+    pos[..., 0] *= 1 + strain[:, None]
+    box.set_position(pos)
+    scene.step()
+
+    velocity = tensor_to_array(box.get_state().vel)
+    momentum = mass[None, :, None] * velocity
+    # Virtual work under affine displacement gives sum(force * rest_position.T) = -volume * stress
+    momentum_moment = momentum.transpose(0, 2, 1) @ rest
+    momentum_moment_ref = -dt * 0.08 * 0.1 * 0.12 * tensor_to_array(strain)[:, None, None] * stress
+    assert_allclose(momentum_moment, momentum_moment_ref, atol=1e-11, rtol=1e-5)
+    assert_allclose(momentum.sum(axis=1), 0.0, atol=1e-10)
+
+
+@pytest.mark.required
 def test_interior_tetrahedralized_vertex(cube_verts_and_faces, box_obj_path, show_viewer):
     # A small maxvolume introduces internal vertices during tetrahedralization: all surface vertices must
     # still lie exactly on the original quad faces, and the visualizer's mesh vertices must track the
