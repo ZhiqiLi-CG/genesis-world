@@ -561,7 +561,9 @@ class RigidOptions(GravityMixin, TimeBasedMixin):
         0.01.
     use_hibernation : bool, optional
         Whether to put bodies that have come to rest to sleep, so the solver skips them until they are disturbed. It
-        quietly has no effect on a body that is differentiable, prunable, or under no-slip friction. Defaults to False.
+        quietly has no effect on a body that is differentiable, prunable, or under no-slip friction. Sleeping also
+        waits for loads to balance, improving resting force accuracy at the cost of additional settling steps.
+        Near zero load, a small residual acceleration also permits sleep. Defaults to False.
     hibernation_thresh_vel : float, optional
         Velocity tolerance for hibernation, in meters per second: a body sleeps once its maximum DOF speed stays below
         this for a few consecutive steps, and a whole island sleeps once all its bodies are ready. Each rotational DOF

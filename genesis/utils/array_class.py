@@ -2876,6 +2876,8 @@ class RigidSimStaticConfig(metaclass=AutoInitMeta):
     # Consecutive sub-tolerance steps a body's max DOF velocity must hold before it is ready to hibernate. Guards
     # against a body that is only momentarily slow (e.g. at the apex of a toss) sleeping prematurely.
     hibernation_min_steps: int = 10
+    # Relative load tolerance and residual speed budget (see func_hibernate_island_if_settled).
+    hibernation_thresh_force: float = 1e-4
     parallel_init: bool = False  # parallelize init over (constraints, envs) when GPU is not saturated by envs alone
     broadphase_traversal: int = 0
     enable_tiled_cholesky_mass_matrix: bool = False

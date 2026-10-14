@@ -3,6 +3,7 @@ from itertools import product
 
 import numpy as np
 import pytest
+import torch
 import trimesh
 
 import genesis as gs
@@ -480,63 +481,103 @@ def test_pruning(show_viewer, n_envs):
 
 @pytest.mark.required
 @pytest.mark.parametrize("n_envs", [0, 2])
-def test_hibernation_with_pruning(show_viewer, n_envs):
-    # A convexified duck is a compound body whose many ground contacts pile into one (duck, plane) link-pair bucket,
-    # so link-pair pruning collapses them into a logical permutation in contact_sort_idx. Islands read contacts through
-    # that permutation and hibernation advects the resting contacts while the body sleeps, so pruning, islands and
-    # hibernation all run together. contact_pruning_tolerance is set explicitly to keep pruning on alongside islands.
-    # Two separated ducks give two islands (hibernation does not keep a single-island scene partitioned). Each duck
-    # must reach the plane without tunnelling, hibernate, and then stay frozen in place.
+@pytest.mark.parametrize("contact_shape", ["mesh", "box"])
+def test_hibernation_with_pruning(show_viewer, n_envs, contact_shape, hibernation_spring_sliders):
+    # Compound mesh contacts exercise pruning while separate entities settle into independent islands.
+    # Small-step box contacts check resting force convergence before the island freezes.
     GRAVITY = -9.81
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
-            dt=1.0 / 100.0,
+            dt=0.01 if contact_shape == "mesh" else 0.002,
             gravity=(0.0, 0.0, GRAVITY),
         ),
         rigid_options=gs.options.RigidOptions(
             contact_pruning_tolerance=0.02,
             use_hibernation=True,
         ),
+        viewer_options=gs.options.ViewerOptions(
+            camera_pos=(1.1, -1.4, 0.9),
+            camera_lookat=(0.55, 0.0, 0.12),
+        ),
         show_viewer=show_viewer,
     )
-    scene.add_entity(gs.morphs.Plane())
-    ducks = [
-        scene.add_entity(
-            gs.morphs.Mesh(
+    scene.add_entity(
+        gs.morphs.Plane(),
+    )
+    entities = []
+    for i in range(2):
+        if contact_shape == "mesh":
+            morph = gs.morphs.Mesh(
                 file="meshes/duck.obj",
                 scale=0.02,
                 pos=(0.4 * i, 0.0, 0.05),
                 euler=(90.0, 90.0, 0.0),
-            ),
+            )
+            material = gs.materials.Rigid()
+        else:
+            morph = gs.morphs.Box(
+                pos=(0.4 * i, 0.0, 0.05),
+                size=(0.1, 0.1, 0.1),
+            )
+            material = gs.materials.Rigid(
+                rho=500.0 if i == 0 else 2000.0,
+            )
+        entities.append(
+            scene.add_entity(
+                morph,
+                material=material,
+                surface=gs.surfaces.Default(
+                    vis_mode="collision",
+                ),
+            )
         )
-        for i in range(2)
-    ]
+    sliders = scene.add_entity(
+        gs.morphs.MJCF(
+            file=hibernation_spring_sliders,
+        ),
+        surface=gs.surfaces.Default(
+            vis_mode="collision",
+        ),
+    )
     scene.build(n_envs=n_envs)
     solver = scene.rigid_solver
+    # A loaded spring and an unloaded spring both settle with zero constraint force.
+    equilibrium = torch.zeros_like(sliders.get_dofs_position())
+    equilibrium[..., 1] = GRAVITY / sliders.get_dofs_stiffness()[..., 1]
+    sliders.set_dofs_position(equilibrium + 1e-8)
 
     def asleep():
-        return all(qd_to_numpy(solver.dyn_state.entities.is_hibernated, duck.idx).all() for duck in ducks)
+        return all(qd_to_numpy(solver.dyn_state.entities.is_hibernated, entity.idx).all() for entity in entities)
 
     for _ in range(120):
         scene.step()
-        assert all((tensor_to_array(duck.get_pos())[..., 2] > -0.05).all() for duck in ducks)
+        assert all((tensor_to_array(entity.get_pos())[..., 2] > -0.05).all() for entity in entities)
         if asleep():
             break
     assert asleep()
-    z_rest = [tensor_to_array(duck.get_pos())[..., 2] for duck in ducks]
+    assert_equal(sliders.get_dofs_velocity(), 0.0)
+    assert_allclose(sliders.get_dofs_position(), equilibrium, atol=1e-7, rtol=0.0)
+    assert qd_to_numpy(solver.dyn_state.entities.is_hibernated, sliders.idx, transpose=True).all()
+    z_rest = [tensor_to_array(entity.get_pos())[..., 2] for entity in entities]
 
     for _ in range(100):
         scene.step()
     assert asleep()
-    for duck, z in zip(ducks, z_rest):
-        assert_allclose(duck.get_pos()[..., 2], z, atol=1e-5)
+    for entity, z in zip(entities, z_rest):
+        assert_allclose(entity.get_pos()[..., 2], z, atol=1e-5)
         # A sleeper resting on the ground keeps reporting the support force balancing its weight.
-        assert_allclose(duck.get_links_net_contact_force()[..., 0, 2], -GRAVITY * duck.get_mass(), tol=2e-3)
+        assert_equal(entity.get_dofs_velocity(), 0.0)
+        if contact_shape == "mesh":
+            assert_allclose(entity.get_links_net_contact_force()[..., 0, 2], -GRAVITY * entity.get_mass(), tol=2e-3)
+        else:
+            assert_allclose(
+                entity.get_links_net_contact_force()[..., 0, 2], -GRAVITY * entity.get_mass(), atol=0.0, rtol=1e-3
+            )
 
     # Resetting wakes every body: the restored state is a discontinuity, so a body left hibernated would stay frozen
-    # and never be resimulated. After reset the ducks are awake again, with their flags cleared and awake counter zeroed.
+    # and never be resimulated. After reset the entities are awake again, with their flags cleared and awake counter zeroed.
     scene.reset()
-    assert not any(qd_to_numpy(solver.dyn_state.entities.is_hibernated, duck.idx).any() for duck in ducks)
+    assert not any(qd_to_numpy(solver.dyn_state.entities.is_hibernated, entity.idx).any() for entity in entities)
     assert (qd_to_numpy(solver.dyn_state.links.awake_steps) == 0).all()
 
 

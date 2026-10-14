@@ -166,7 +166,7 @@ def func_hibernate_island_if_settled(
     rigid_config: qd.template(),
 ):
     """Put awake island i_island of env i_b to sleep once every one of its links has stayed below the hibernation speed
-    tolerance for hibernation_min_steps consecutive steps (see awake_steps in array_class.py).
+    tolerance for hibernation_min_steps consecutive steps and its residual load is sufficiently small.
 
     The island sleeps as a unit: every link is flagged (see func_hibernate_link) and daisy-chained to the next, so the
     partition build keeps the component one island for as long as it sleeps. An entity is hibernated once every one of
@@ -182,6 +182,33 @@ def func_hibernate_island_if_settled(
         for i_link_ref_offset_ in range(link_ref_n):
             i_l = constraint_state.island.link_id[link_ref_start + i_link_ref_offset_, i_b]
             if dyn_state.links.awake_steps[i_l, i_b] < rigid_config.hibernation_min_steps:
+                is_settled = False
+                break
+            I_l = [i_l, i_b] if qd.static(rigid_config.batch_links_info) else i_l
+            force_norm = gs.qd_float(0.0)
+            smooth_force_norm = gs.qd_float(0.0)
+            constraint_force_norm = gs.qd_float(0.0)
+            max_acc = gs.qd_float(0.0)
+            for i_d in range(dyn_info.links.dof_start[I_l], dyn_info.links.dof_end[I_l]):
+                I_d = [i_d, i_b] if qd.static(rigid_config.batch_dofs_info) else i_d
+                force_norm = force_norm + dyn_state.dofs.force[i_d, i_b] ** 2
+                smooth_force_norm = smooth_force_norm + dyn_state.dofs.qf_smooth[i_d, i_b] ** 2
+                constraint_force_norm = constraint_force_norm + dyn_state.dofs.qf_constraint[i_d, i_b] ** 2
+                max_acc = qd.max(max_acc, dyn_info.dofs.dof_length[I_d] * qd.abs(dyn_state.dofs.acc[i_d, i_b]))
+            # A low speed can occur while the support force is still converging. Each link must balance its own
+            # load so a heavy neighbour cannot mask its residual when the island sleeps.
+            force_tolerance = rigid_config.hibernation_thresh_force**2 * qd.max(
+                smooth_force_norm, constraint_force_norm
+            )
+            # At zero constraint load, smooth force is itself the residual and its relative error stays one.
+            # Bound the residual's surface-speed increment over the settling window by the same fraction of
+            # the speed tolerance. This supplies an absolute rest criterion even as the load vanishes.
+            acc_tolerance = (
+                rigid_config.hibernation_thresh_force
+                * rigid_info.hibernation_thresh_vel[None]
+                / (rigid_config.hibernation_min_steps * rigid_info.substep_dt[None])
+            )
+            if force_norm > force_tolerance and max_acc > acc_tolerance:
                 is_settled = False
                 break
         if is_settled:

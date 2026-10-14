@@ -1406,3 +1406,14 @@ def damped_pendulum_and_tilted_light_capsule():
         solref="0.004 1",
     )
     return ET.tostring(mjcf, encoding="unicode")
+
+
+@pytest.fixture
+def hibernation_spring_sliders():
+    mjcf = ET.Element("mujoco")
+    world = ET.SubElement(mjcf, "worldbody")
+    for i, axis in enumerate(("1 0 0", "0 0 1")):
+        link = ET.SubElement(world, "body", name=f"slider{i}", pos=f"{0.8 + 0.3 * i} 0 0.25")
+        ET.SubElement(link, "joint", type="slide", axis=axis, stiffness="100", damping="20", armature="0")
+        ET.SubElement(link, "geom", type="box", size="0.025 0.025 0.025", mass="1")
+    return ET.tostring(mjcf, encoding="unicode")
