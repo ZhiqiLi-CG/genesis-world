@@ -183,41 +183,53 @@ def test_offset_pos(box_obj_path, show_viewer):
 
 
 @pytest.mark.required
-@pytest.mark.parametrize("precision", ["64"])
 @pytest.mark.parametrize(
-    "coupler_type, material_model",
+    "precision, coupler_type, material_model, is_free_fall, n_linesearch_iterations",
     [
-        (gs.options.SAPCouplerOptions, "linear"),
-        (gs.options.SAPCouplerOptions, "linear_corotated"),
-        (gs.options.LegacyCouplerOptions, "linear"),
+        ("64", gs.options.SAPCouplerOptions, "linear", False, 0),
+        ("64", gs.options.SAPCouplerOptions, "linear_corotated", False, 0),
+        ("64", gs.options.LegacyCouplerOptions, "linear", False, 0),
+        ("32", gs.options.LegacyCouplerOptions, "linear", True, 0),
+        ("32", gs.options.LegacyCouplerOptions, "linear", True, 5),
+        ("64", gs.options.LegacyCouplerOptions, "linear", True, 5),
     ],
 )
-def test_implicit_falling_sphere_box(coupler_type, material_model, show_viewer):
-    SPHERE_POS = (0.4, -0.1, 0.1)
+def test_implicit_falling_sphere_box(coupler_type, material_model, is_free_fall, n_linesearch_iterations, show_viewer):
+    SPHERE_POS = (0.4, -0.1, 0.5 if is_free_fall else 0.1)
     SPHERE_RADIUS = 0.1
     SPHERE_RHO = 500.0
-    BOX_POS = (0.0, 0.1, 0.3)
+    BOX_POS = (0.0, 0.1, 2.0 if is_free_fall else 0.3)
     BOX_SIZE = 0.05
+    DT = 1e-4 if is_free_fall else 1.0 / 60.0
+    GRAVITY = -9.81
+
+    fem_options = gs.options.FEMOptions(
+        use_implicit_solver=True,
+        n_linesearch_iterations=n_linesearch_iterations,
+    )
+    if is_free_fall:
+        fem_options.damping_alpha = 0.0
+        fem_options.damping_beta = 0.0
+        fem_options.n_newton_iterations = 3
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
-            dt=1.0 / 60.0,
-            substeps=3 if coupler_type == gs.options.SAPCouplerOptions else 2,
+            dt=DT,
+            substeps=1 if is_free_fall else (3 if coupler_type == gs.options.SAPCouplerOptions else 2),
+            gravity=(0.0, 0.0, GRAVITY),
         ),
-        fem_options=gs.options.FEMOptions(
-            use_implicit_solver=True,
-        ),
+        fem_options=fem_options,
         coupler_options=coupler_type(),
         viewer_options=gs.options.ViewerOptions(
-            camera_pos=(1.2, 0.0, 0.0),
-            camera_lookat=(0.0, 0.0, 0.0),
+            camera_pos=(3.0, -3.0, 1.2) if is_free_fall else (1.2, 0.0, 0.0),
+            camera_lookat=(0.2, 0.0, 1.2) if is_free_fall else (0.0, 0.0, 0.0),
         ),
         show_viewer=show_viewer,
         show_FPS=False,
     )
     sphere = scene.add_entity(
         morph=gs.morphs.Sphere(
-            pos=(0.4, -0.1, 0.10),
+            pos=SPHERE_POS,
             radius=SPHERE_RADIUS,
         ),
         material=gs.materials.FEM.Elastic(
@@ -236,6 +248,19 @@ def test_implicit_falling_sphere_box(coupler_type, material_model, show_viewer):
 
     # Build the scene
     scene.build()
+
+    if is_free_fall:
+        initial_positions = [entity.get_state().pos.clone() for entity in scene.entities]
+        for i_step in range(50):
+            scene.step()
+            for entity in scene.entities:
+                state = entity.get_state()
+                velocity_ref = (0.0, 0.0, GRAVITY * DT * (i_step + 1))
+                assert_allclose(state.vel.mean(dim=-2), velocity_ref, atol=2e-5, rtol=0.0)
+        displacement_ref = (0.0, 0.0, GRAVITY * DT**2 * 50 * 51 / 2)
+        for entity, initial_pos in zip(scene.entities, initial_positions):
+            assert_allclose(entity.get_state().pos - initial_pos, displacement_ref, atol=2e-6, rtol=0.0)
+        return
 
     sphere_mass_ref = (4 / 3 * np.pi * SPHERE_RADIUS**3) * SPHERE_RHO
     elems_mass_scaled = scene.fem_solver.elements_i.mass_scaled.to_numpy()
