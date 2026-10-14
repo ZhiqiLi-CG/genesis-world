@@ -530,9 +530,32 @@ def test_elliptic_cone_coulomb_isotropy(sparse_solve, show_viewer):
 
 
 @pytest.mark.required
-@pytest.mark.parametrize("friction_cone", [gs.friction_cone.pyramidal, gs.friction_cone.elliptic])
+@pytest.mark.parametrize(
+    "friction_cone, contact_resolution, friction",
+    [
+        (gs.friction_cone.pyramidal, gs.contact_resolution.convex, 1.0),
+        (gs.friction_cone.elliptic, gs.contact_resolution.signorini, 1.0),
+        (gs.friction_cone.elliptic, gs.contact_resolution.convex, 0.0),
+        (gs.friction_cone.elliptic, gs.contact_resolution.convex, 1e-6),
+        (gs.friction_cone.elliptic, gs.contact_resolution.signorini, 0.0),
+        pytest.param(
+            gs.friction_cone.elliptic,
+            gs.contact_resolution.convex,
+            0.0,
+            marks=pytest.mark.precision("32"),
+            id="convex-zero-fp32",
+        ),
+        pytest.param(
+            gs.friction_cone.elliptic,
+            gs.contact_resolution.convex,
+            1e-6,
+            marks=pytest.mark.precision("32"),
+            id="convex-small-fp32",
+        ),
+    ],
+)
 @pytest.mark.parametrize("n_envs", [0, 2])
-def test_torsional_friction_spin_down_rate(friction_cone, n_envs, show_viewer):
+def test_torsional_friction_spin_down_rate(friction_cone, contact_resolution, friction, n_envs, show_viewer):
     # I * dw/dt = -friction_torsional * m * g with I = 2/5 m r^2: the saturated spin-down rate is
     # friction_torsional * g / (0.4 r^2), mass-independent. The elliptic cone tracks this exact Coulomb bound once
     # fully slipping; the pyramidal cone's regularized friction decays below it, so only the rate ordering is
@@ -549,7 +572,9 @@ def test_torsional_friction_spin_down_rate(friction_cone, n_envs, show_viewer):
             gravity=(0.0, 0.0, -GRAVITY),
         ),
         rigid_options=gs.options.RigidOptions(
+            integrator=gs.integrator.Euler,
             friction_cone=friction_cone,
+            contact_resolution=contact_resolution,
             enable_torsional_friction=True,
         ),
         viewer_options=gs.options.ViewerOptions(
@@ -558,7 +583,7 @@ def test_torsional_friction_spin_down_rate(friction_cone, n_envs, show_viewer):
         ),
         show_viewer=show_viewer,
     )
-    scene.add_entity(
+    plane = scene.add_entity(
         gs.morphs.Plane(),
         material=gs.materials.Rigid(
             friction_torsional=0.0,
@@ -579,6 +604,9 @@ def test_torsional_friction_spin_down_rate(friction_cone, n_envs, show_viewer):
             )
         )
     scene.build(n_envs=n_envs)
+    for entity in (plane, *spheres):
+        for geom in entity.geoms:
+            geom.set_friction(friction)
 
     for _ in range(10):
         scene.step()
@@ -615,11 +643,55 @@ def test_torsional_friction_spin_down_rate(friction_cone, n_envs, show_viewer):
         scene.step()
     assert_allclose(w_runtime_start - spheres[0].get_dofs_velocity()[..., 5], spin_downs[-1], rtol=0.05, atol=1e-3)
 
+    if friction < 0.01:
+        # I * omega / (mu_rot * m * g) = 0.041 s. Five stopping times include the regularized sticking tail.
+        for sphere in spheres:
+            sphere.set_friction_torsional(0.0001)
+            velocity = torch.zeros_like(sphere.get_dofs_velocity())
+            velocity[..., 5] = 0.01
+            sphere.set_dofs_velocity(velocity)
+        for _ in range(20):
+            scene.step()
+        for sphere in spheres:
+            assert_allclose(sphere.get_dofs_velocity()[..., 5], 0.0, atol=1e-5)
+            force = torch.zeros_like(sphere.get_dofs_velocity())
+            force[..., 5] = 0.5 * 0.0001 * sphere.get_mass() * GRAVITY
+            sphere.control_dofs_force(force)
+        for _ in range(10):
+            scene.step()
+        for sphere in spheres:
+            # A sub-limit torque holds with a small compliance creep, bounded relative to the launch speed.
+            assert_allclose(sphere.get_dofs_velocity()[..., 5], 0.0, atol=1e-4)
+            assert_allclose(sphere.get_pos()[..., 2], RADIUS, atol=5e-4)
+
 
 @pytest.mark.required
-@pytest.mark.parametrize("friction_cone", [gs.friction_cone.pyramidal, gs.friction_cone.elliptic])
+@pytest.mark.parametrize(
+    "friction_cone, contact_resolution, friction",
+    [
+        (gs.friction_cone.pyramidal, gs.contact_resolution.convex, 1.0),
+        (gs.friction_cone.elliptic, gs.contact_resolution.signorini, 1.0),
+        (gs.friction_cone.elliptic, gs.contact_resolution.convex, 0.0),
+        (gs.friction_cone.elliptic, gs.contact_resolution.convex, 1e-6),
+        (gs.friction_cone.elliptic, gs.contact_resolution.signorini, 0.0),
+        pytest.param(
+            gs.friction_cone.elliptic,
+            gs.contact_resolution.convex,
+            0.0,
+            marks=pytest.mark.precision("32"),
+            id="convex-zero-fp32",
+        ),
+        pytest.param(
+            gs.friction_cone.elliptic,
+            gs.contact_resolution.convex,
+            1e-6,
+            marks=pytest.mark.precision("32"),
+            id="convex-small-fp32",
+        ),
+    ],
+)
 @pytest.mark.parametrize("n_envs", [0, 2])
-def test_rolling_friction_deceleration_rate(friction_cone, n_envs, show_viewer):
+def test_rolling_friction_deceleration_rate(friction_cone, contact_resolution, friction, n_envs, show_viewer):
     # A sphere rolling without slipping decelerates only through the rolling resistance torque friction_rolling *
     # m * g: with the rolling constraint v = w * r and I = 2/5 m r^2, dv/dt = -(5/7) * friction_rolling * g / r,
     # mass-independent. The elliptic cone tracks this exact Coulomb bound; the pyramidal cone decays below it, so
@@ -636,7 +708,9 @@ def test_rolling_friction_deceleration_rate(friction_cone, n_envs, show_viewer):
             gravity=(0.0, 0.0, -GRAVITY),
         ),
         rigid_options=gs.options.RigidOptions(
+            integrator=gs.integrator.Euler,
             friction_cone=friction_cone,
+            contact_resolution=contact_resolution,
             enable_torsional_friction=True,
             enable_rolling_friction=True,
         ),
@@ -646,7 +720,7 @@ def test_rolling_friction_deceleration_rate(friction_cone, n_envs, show_viewer):
         ),
         show_viewer=show_viewer,
     )
-    scene.add_entity(
+    plane = scene.add_entity(
         gs.morphs.Plane(),
         material=gs.materials.Rigid(
             friction_torsional=0.0,
@@ -668,6 +742,9 @@ def test_rolling_friction_deceleration_rate(friction_cone, n_envs, show_viewer):
             )
         )
     scene.build(n_envs=n_envs)
+    for entity in (plane, *spheres):
+        for geom in entity.geoms:
+            geom.set_friction(friction)
 
     for _ in range(10):
         scene.step()
@@ -676,15 +753,19 @@ def test_rolling_friction_deceleration_rate(friction_cone, n_envs, show_viewer):
     # Let the contact settle into steady rolling before measuring the deceleration.
     for _ in range(5):
         scene.step()
-    v_start = [sphere.get_dofs_velocity()[..., 0] for sphere in spheres]
+    v_start = [sphere.get_dofs_velocity()[..., 0 if friction >= 0.01 else 4] for sphere in spheres]
     for _ in range(10):
         scene.step()
     slow_downs = []
     for sphere, friction_rolling, v_0 in zip(spheres, spheres_friction_rolling, v_start):
-        slow_down = v_0 - sphere.get_dofs_velocity()[..., 0]
+        slow_down = v_0 - sphere.get_dofs_velocity()[..., 0 if friction >= 0.01 else 4]
         slow_downs.append(slow_down)
         if friction_cone == gs.friction_cone.elliptic or friction_rolling == 0.0:
-            deceleration = (5.0 / 7.0) * friction_rolling * GRAVITY / RADIUS
+            if friction >= 0.01:
+                deceleration = (5.0 / 7.0) * friction_rolling * GRAVITY / RADIUS
+            else:
+                # With negligible sliding friction, rolling resistance changes angular momentum independently.
+                deceleration = friction_rolling * GRAVITY / (0.4 * RADIUS**2)
             assert_allclose(slow_down, deceleration * 10 * DT, rtol=0.05, atol=1e-3)
     for slow_down_slow, slow_down_fast in zip(slow_downs[:-1], slow_downs[1:]):
         assert (slow_down_slow < slow_down_fast).all()
@@ -693,6 +774,27 @@ def test_rolling_friction_deceleration_rate(friction_cone, n_envs, show_viewer):
         spheres[0].get_mass() * GRAVITY,
         rtol=0.01,
     )
+
+    if friction < 0.01:
+        # I * omega / (mu_rot * m * g) = 0.041 s. Five stopping times include the regularized sticking tail.
+        for sphere in spheres:
+            sphere.set_friction_rolling(0.0001)
+            velocity = torch.zeros_like(sphere.get_dofs_velocity())
+            velocity[..., 4] = 0.01
+            sphere.set_dofs_velocity(velocity)
+        for _ in range(20):
+            scene.step()
+        for sphere in spheres:
+            assert_allclose(sphere.get_dofs_velocity()[..., 4], 0.0, atol=1e-5)
+            force = torch.zeros_like(sphere.get_dofs_velocity())
+            force[..., 4] = 0.5 * 0.0001 * sphere.get_mass() * GRAVITY
+            sphere.control_dofs_force(force)
+        for _ in range(10):
+            scene.step()
+        for sphere in spheres:
+            # A sub-limit torque holds with a small compliance creep, bounded relative to the launch speed.
+            assert_allclose(sphere.get_dofs_velocity()[..., 4], 0.0, atol=1e-4)
+            assert_allclose(sphere.get_pos()[..., 2], RADIUS, atol=5e-4)
 
 
 # The mesh box at the larger scale is the demanding case, so it is the required one: it reaches a face normal's support
@@ -990,14 +1092,26 @@ def test_elliptic_cone_push_isotropy(contact_resolution, is_box_mesh, scale, pre
 
 @pytest.mark.required
 @pytest.mark.parametrize("n_envs", [0, 2])
-def test_kinetic_friction(n_envs, show_viewer):
+@pytest.mark.parametrize("precision", ["32", "64"])
+@pytest.mark.parametrize(
+    "friction_cone, contact_resolution",
+    [
+        (gs.friction_cone.pyramidal, gs.contact_resolution.convex),
+        (gs.friction_cone.elliptic, gs.contact_resolution.convex),
+        (gs.friction_cone.elliptic, gs.contact_resolution.signorini),
+    ],
+)
+def test_kinetic_friction(n_envs, precision, friction_cone, contact_resolution, show_viewer):
     GRAVITY = 9.81
     SIZE = 0.1
     # A cube resting flat tips once friction can torque it over its leading edge, from mu = width / (2 * com_height).
     TIP_FRICTION = SIZE / (2.0 * 0.5 * SIZE)
-    # Friction coefficient and launch speed per box, spanning both sides of that threshold. 0.01 is the smallest
-    # coefficient the contact model applies, and the plane wears it so the pairwise max leaves each box its own.
+    # Friction coefficient and launch speed per box, spanning both sides of that threshold. The plane wears the
+    # smallest coefficient in the sweep so the pairwise max leaves each box its own.
     BOXES = ((0.01, 6.0), (0.25, 6.0), (0.5, 2.0), (0.5, 6.0), (0.5, 20.0), (0.9, 6.0), (1.2, 6.0), (2.0, 6.0))
+    if contact_resolution != gs.contact_resolution.signorini:
+        BOXES = ((0.01, 6.0),)
+    BOXES = ((0.0, 1.0), (1e-6, 1.0), (0.001, 1.0), (0.005, 1.0)) + BOXES
     N_SETTLE = 40
     N_SLIDE = 40
 
@@ -1007,7 +1121,9 @@ def test_kinetic_friction(n_envs, show_viewer):
             gravity=(0.0, 0.0, -GRAVITY),
         ),
         rigid_options=gs.options.RigidOptions(
-            friction_cone=gs.friction_cone.elliptic,
+            integrator=gs.integrator.Euler,
+            friction_cone=friction_cone,
+            contact_resolution=contact_resolution,
         ),
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(1.0, -1.5, 0.6),
@@ -1015,7 +1131,7 @@ def test_kinetic_friction(n_envs, show_viewer):
         ),
         show_viewer=show_viewer,
     )
-    scene.add_entity(
+    plane = scene.add_entity(
         gs.morphs.Plane(),
         material=gs.materials.Rigid(
             friction=0.01,
@@ -1029,26 +1145,35 @@ def test_kinetic_friction(n_envs, show_viewer):
                 size=(SIZE, SIZE, SIZE),
             ),
             material=gs.materials.Rigid(
-                friction=friction,
+                friction=max(friction, 0.01),
             ),
         )
         for i_box, (friction, _) in enumerate(BOXES)
     ]
     scene.build(n_envs=n_envs)
+    for geom in plane.geoms:
+        geom.set_friction(0.0)
+    for box, (friction, _) in zip(boxes, BOXES):
+        for geom in box.geoms:
+            geom.set_friction(friction)
 
     for _ in range(N_SETTLE):
         scene.step()
 
+    position_zero = boxes[0].get_pos()
     height_0 = torch.stack([box.get_pos()[..., 2] for box in boxes])
     for box, (_, speed) in zip(boxes, BOXES):
         velocity = box.get_dofs_velocity()
         velocity[..., 0] = speed
         box.set_dofs_velocity(velocity)
     speed_0 = torch.stack([box.get_dofs_velocity()[..., 0] for box in boxes])
+    velocity_z_0 = torch.stack([box.get_dofs_velocity()[..., 2] for box in boxes])
 
+    impulses = torch.zeros_like(torch.stack([box.get_pos() for box in boxes]))
     height_min, height_max, tilt_max = height_0, height_0, torch.zeros_like(height_0)
     for _ in range(N_SLIDE):
         scene.step()
+        impulses += torch.stack([box.get_links_net_contact_force().sum(dim=-2) for box in boxes]) * scene.sim.dt
         height = torch.stack([box.get_pos()[..., 2] for box in boxes])
         height_min = torch.minimum(height_min, height)
         height_max = torch.maximum(height_max, height)
@@ -1063,20 +1188,34 @@ def test_kinetic_friction(n_envs, show_viewer):
 
     # Below the threshold the box slides flat; above it, friction torques it over its leading edge.
     assert_allclose(tilt_max[is_sliding], 0.0, atol=0.1)
-    assert (tilt_max[~is_sliding] > 45.0).all()
+    if contact_resolution == gs.contact_resolution.signorini:
+        assert (tilt_max[~is_sliding] > 45.0).all()
 
     # Penetration answers to the load alone, so a sliding box sits exactly as deep as a resting one. Every box here
     # carries the same weight, so holding all of them to their common resting height pins the penetration against
     # both the friction coefficient and the sliding speed at once. The bound is set by the box closest to the
     # tipping threshold, whose contact force genuinely leans toward its leading edge and lifts the centre of mass.
-    assert_allclose(height_min[is_sliding], height_0[is_sliding], atol=5e-7)
-    assert_allclose(height_max[is_sliding], height_0[is_sliding], atol=5e-7)
+    height_tolerance = 5e-7 if contact_resolution == gs.contact_resolution.signorini else 5e-4
+    assert_allclose(height_min[is_sliding], height_0[is_sliding], atol=height_tolerance)
+    assert_allclose(height_max[is_sliding], height_0[is_sliding], atol=height_tolerance)
 
-    # The height above measures this through the geometry; the contact force states it directly. A sliding contact
-    # carries the weight and nothing more, however much tangential force the slide is asking of it.
-    normal_force = torch.stack([box.get_links_net_contact_force().sum(dim=-2)[..., 2] for box in boxes])
-    assert_allclose(normal_force[is_sliding], boxes[0].get_mass() * GRAVITY, rtol=0.01)
+    # Signorini decouples the normal force from tangential demand, so every sliding contact carries the weight.
+    if contact_resolution == gs.contact_resolution.signorini:
+        normal_force = torch.stack([box.get_links_net_contact_force().sum(dim=-2)[..., 2] for box in boxes])
+        assert_allclose(normal_force[is_sliding], boxes[0].get_mass() * GRAVITY, rtol=0.01)
+    else:
+        # Coupled contact trades tangential demand for normal force. Account for its transient vertical momentum.
+        velocity_z_1 = torch.stack([box.get_dofs_velocity()[..., 2] for box in boxes])
+        normal_impulse = boxes[0].get_mass() * (GRAVITY * N_SLIDE * scene.sim.dt + velocity_z_1 - velocity_z_0)
+        assert_allclose(impulses[..., 2][is_sliding], normal_impulse[is_sliding], rtol=0.01, atol=1e-6)
+        assert (impulses[..., 2] > 0.9 * boxes[0].get_mass() * GRAVITY * N_SLIDE * scene.sim.dt).all()
 
     # Each box decelerates at its own mu * g, independently of how fast it was launched.
     deceleration = (speed_0 - speed_1) / (N_SLIDE * scene.sim.dt)
-    assert_allclose(deceleration[is_sliding], (friction * GRAVITY).expand_as(height_0)[is_sliding], rtol=0.01)
+    if contact_resolution == gs.contact_resolution.signorini:
+        assert_allclose(
+            deceleration[is_sliding], (friction * GRAVITY).expand_as(height_0)[is_sliding], rtol=0.01, atol=1e-5
+        )
+    assert_allclose(impulses[..., 0][is_sliding], (-friction * impulses[..., 2])[is_sliding], atol=1e-6)
+    assert_allclose(boxes[0].get_pos()[..., 0] - position_zero[..., 0], N_SLIDE * scene.sim.dt, atol=1e-6)
+    assert_allclose(boxes[0].get_dofs_velocity()[..., :2], (1.0, 0.0), atol=1e-6)

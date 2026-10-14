@@ -464,7 +464,8 @@ def kernel_manual_add_collision_constraints_bw(
             vel_motion = cdof_vel - t_pos x cdof_ang,  t_pos = contact_pos - root_COM[link]
         jac_qvel = sum_chain jac[n_con, i_d] * dofs_vel[i_d]
         imp, aref = imp_aref(sol_params, -penetration, jac_qvel, -penetration)
-        diag = (invweight + mu2 invweight) * 2 mu2 (1-imp)/imp, mu2 = friction^2/impratio ; efc_D = 1/diag
+        diag = (invweight + mu2 invweight) * 2 mu2 (1-imp)/imp, mu2 = max(friction, 0.01)^2/impratio
+        efc_D = 1/diag
     """
     EPS = rigid_info.EPS[None]
     _B = dyn_state.dofs.ctrl_mode.shape[1]
@@ -521,8 +522,9 @@ def kernel_manual_add_collision_constraints_bw(
             d_imp_x_d_pen = -sign_neg / sol_params[4]
 
             # diag = C0 * (1-imp)/imp with the impratio-regularized cone coefficient of the forward:
-            # friction_sq_reg = friction^2 / impratio (see add_collision_constraints in solver.py).
-            friction_sq_reg = friction * friction / rigid_info.impratio[None]
+            # Floor only the regularization scale (see _add_friction_constraint in solver.py).
+            friction_reg = qd.max(friction, 1e-2)
+            friction_sq_reg = friction_reg * friction_reg / rigid_info.impratio[None]
             C0 = (invweight + friction_sq_reg * invweight) * 2.0 * friction_sq_reg
             diag_raw = C0 * (1.0 - imp) / imp
             diag = qd.max(diag_raw, EPS)

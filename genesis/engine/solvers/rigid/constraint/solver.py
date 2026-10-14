@@ -630,9 +630,9 @@ def _func_contact_row_direction(
     n_ang = qd.Vector.zero(gs.qd_float, 3)
     if qd.static(rigid_config.enable_elliptic_friction):
         if i_friction == 1:
-            n = d1
+            n = d1 if friction > 0.0 else qd.Vector.zero(gs.qd_float, 3)
         elif i_friction == 2:
-            n = d2
+            n = d2 if friction > 0.0 else qd.Vector.zero(gs.qd_float, 3)
         if qd.static(rigid_config.enable_torsional_friction):
             # The spin axis opposes the contact normal like the normal row. A zero coefficient must zero the whole
             # row: the cone never bounds a zero-weighted axis, so its regularization alone would leak a spurious
@@ -795,8 +795,8 @@ def _add_friction_constraint(
     aref = gs.qd_float(0.0)
     if qd.static(rigid_config.enable_elliptic_friction):
         # Friction rows carry no positional error (pure damping reference); the normal row references the penetration
-        # depth. The impedance is shared (it depends only on penetration), and the friction rows are impratio times
-        # stiffer than the normal row (R_t = R_n / impratio), matching MuJoCo's elliptic cone.
+        # depth. The impedance is shared (it depends only on penetration), and the base friction regularization is
+        # R_t = R_n / impratio, before the per-axis coefficient scaling of MuJoCo's elliptic cone.
         pos_ref = -contact_data_penetration if i_friction == 0 else 0.0
         imp, aref = gu.imp_aref(contact_data_sol_params, -contact_data_penetration, jac_qvel, pos_ref)
         diag = invweight * (1 - imp) / imp
@@ -805,6 +805,13 @@ def _add_friction_constraint(
         # The cone solver reads the contact friction coefficient off the head (normal) row, and the torsional and
         # rolling ones off their own rows.
         efc_frictionloss = contact_data_friction if i_friction == 0 else gs.qd_float(0.0)
+        # The convex cone needs D_i * con_mu^2 = D_n * mu_i^2 on every active friction axis so the sticking and
+        # sliding potentials meet continuously. Floor the numerical scale to retain finite rotational compliance
+        # through zero sliding friction, and apply the same scale to sliding rows and _func_cone_head_load.
+        friction_scale = qd.max(contact_data_friction, 1e-2)
+        if qd.static(not rigid_config.enable_signorini_contact):
+            if 0 < i_friction < 3 and 0.0 < contact_data_friction < 1e-2:
+                diag = diag * (friction_scale / contact_data_friction) ** 2
         if qd.static(rigid_config.enable_torsional_friction):
             # The mu ratio lives in the spin row's regularization (jacobian unscaled), matching MuJoCo's elliptic
             # cone: it is what bounds the torsional torque at friction_torsional times the normal force once every
@@ -814,14 +821,14 @@ def _add_friction_constraint(
             if i_friction == 3:
                 if qd.static(not rigid_config.enable_signorini_contact):
                     if contact_data_friction_torsional > 0.0:
-                        diag = diag * contact_data_friction**2 / contact_data_friction_torsional**2
+                        diag = diag * friction_scale**2 / contact_data_friction_torsional**2
                 efc_frictionloss = contact_data_friction_torsional
         if qd.static(rigid_config.enable_rolling_friction):
             # The rolling rows carry the mu ratio in their regularization like the spin row.
             if i_friction >= 4:
                 if qd.static(not rigid_config.enable_signorini_contact):
                     if contact_data_friction_rolling > 0.0:
-                        diag = diag * contact_data_friction**2 / contact_data_friction_rolling**2
+                        diag = diag * friction_scale**2 / contact_data_friction_rolling**2
                 efc_frictionloss = contact_data_friction_rolling
         constraint_state.efc_frictionloss[n_con, i_b] = efc_frictionloss
     else:
@@ -829,7 +836,10 @@ def _add_friction_constraint(
         # MuJoCo's regularized pyramid impedance: impratio shrinks the effective cone coefficient (mu_reg^2 = mu^2 /
         # impratio), stiffening the friction-mixed rows. Because every pyramid row mixes the normal direction, a high
         # ratio also stiffens the normal response - the reason to raise impratio with the elliptic cone instead.
-        friction_sq_reg = contact_data_friction * contact_data_friction / rigid_info.impratio[None]
+        # Coincident pyramid edges need finite regularization at zero friction. Floor only the numerical scale,
+        # leaving the physical coefficient in the row directions and reported forces unchanged.
+        friction_reg = qd.max(contact_data_friction, 1e-2)
+        friction_sq_reg = friction_reg * friction_reg / rigid_info.impratio[None]
         diag = invweight + friction_sq_reg * invweight
         diag = diag * 2 * friction_sq_reg * (1 - imp) / imp
         if qd.static(rigid_config.enable_torsional_friction):
@@ -1026,27 +1036,32 @@ def _add_collision_constraints_per_contact(
                 diag = gs.qd_float(0.0)
                 aref = gs.qd_float(0.0)
                 if qd.static(rigid_config.enable_elliptic_friction):
-                    # Friction rows carry no positional error (pure damping reference) and are impratio times stiffer
-                    # than the normal row; the head (normal) row stores the contact friction for the cone solver.
+                    # Friction rows carry no positional error and start from R_n / impratio before coefficient scaling.
+                    # The head (normal) row stores the contact friction for the cone solver.
                     pos_ref = -contact_data_penetration if i_friction == 0 else 0.0
                     imp, aref = gu.imp_aref(contact_data_sol_params, -contact_data_penetration, jac_qvel, pos_ref)
                     diag = invweight * (1 - imp) / imp
                     if i_friction > 0:
                         diag = diag / rigid_info.impratio[None]
                     efc_frictionloss = contact_data_friction if i_friction == 0 else gs.qd_float(0.0)
+                    # Shared friction-axis scale and continuous cone potential: see _add_friction_constraint.
+                    friction_scale = qd.max(contact_data_friction, 1e-2)
+                    if qd.static(not rigid_config.enable_signorini_contact):
+                        if 0 < i_friction < 3 and 0.0 < contact_data_friction < 1e-2:
+                            diag = diag * (friction_scale / contact_data_friction) ** 2
                     if qd.static(rigid_config.enable_torsional_friction):
                         # Spin-row regularization and torsional coefficient storage: see _add_friction_constraint.
                         if i_friction == 3:
                             if qd.static(not rigid_config.enable_signorini_contact):
                                 if contact_data_friction_torsional > 0.0:
-                                    diag = diag * contact_data_friction**2 / contact_data_friction_torsional**2
+                                    diag = diag * friction_scale**2 / contact_data_friction_torsional**2
                             efc_frictionloss = contact_data_friction_torsional
                     if qd.static(rigid_config.enable_rolling_friction):
                         # Rolling-row regularization and coefficient storage: see _add_friction_constraint.
                         if i_friction >= 4:
                             if qd.static(not rigid_config.enable_signorini_contact):
                                 if contact_data_friction_rolling > 0.0:
-                                    diag = diag * contact_data_friction**2 / contact_data_friction_rolling**2
+                                    diag = diag * friction_scale**2 / contact_data_friction_rolling**2
                             efc_frictionloss = contact_data_friction_rolling
                     constraint_state.efc_frictionloss[n_con, i_b] = efc_frictionloss
                 else:
@@ -1055,7 +1070,9 @@ def _add_collision_constraints_per_contact(
                     )
                     # MuJoCo's regularized pyramid impedance: impratio shrinks the effective cone coefficient
                     # (mu_reg^2 = mu^2 / impratio), stiffening the friction-mixed rows.
-                    friction_sq_reg = contact_data_friction * contact_data_friction / rigid_info.impratio[None]
+                    # Floor only the regularization scale: see _add_friction_constraint.
+                    friction_reg = qd.max(contact_data_friction, 1e-2)
+                    friction_sq_reg = friction_reg * friction_reg / rigid_info.impratio[None]
                     diag = invweight + friction_sq_reg * invweight
                     diag = diag * 2 * friction_sq_reg * (1 - imp) / imp
                     if qd.static(rigid_config.enable_torsional_friction):
@@ -4173,8 +4190,8 @@ def _func_cone_head_load(
 
     Returns (rows_efc_D, rows_friction, con_mu, rows_jaref, latch): the per-row impedances, the per-row friction
     coefficients (sliding on the head and tangent slots, torsional and rolling on their own slots, see
-    efc_frictionloss in array_class.py), the regularized master coefficient con_mu = friction / sqrt(impratio)
-    (computed as friction * sqrt(rows_efc_D[0] / rows_efc_D[1]) since the friction rows are impratio times stiffer),
+    efc_frictionloss in array_class.py), the regularized master coefficient con_mu = max(friction, 0.01) / sqrt(impratio)
+    under 'convex' (see the shared friction-axis scale in _add_friction_constraint),
     the per-row residuals, and under 'signorini' the contact's latch, the normal force scaling its friction discs (see
     cone_latch in array_class.py).
     """
@@ -4191,7 +4208,10 @@ def _func_cone_head_load(
     if qd.static(rigid_config.enable_torsional_friction):
         for i_r in qd.static(range(3, n_rows)):
             rows_friction[i_r] = constraint_state.efc_frictionloss[i_c + i_r, i_b]
-    con_mu = friction * qd.sqrt(rows_efc_D[0] / rows_efc_D[1])
+    # Active sliding rows already carry the scale ratio in D. Zero axes keep finite D and use the numerical floor
+    # directly, preserving normal support and rotational compliance (see _add_friction_constraint).
+    friction_scale = friction if friction > 0.0 else 1e-2
+    con_mu = friction_scale * qd.sqrt(rows_efc_D[0] / rows_efc_D[1])
     latch = gs.qd_float(0.0)
     if qd.static(rigid_config.enable_signorini_contact):
         nef = constraint_state.n_constraints_equality[i_b] + constraint_state.n_constraints_frictionloss[i_b]

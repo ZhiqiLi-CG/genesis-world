@@ -450,7 +450,7 @@ def func_set_contact(
     collider_state.contact_data.normal[i_c, i_b] = normal
     collider_state.contact_data.pos[i_c, i_b] = contact_pos
     collider_state.contact_data.penetration[i_c, i_b] = penetration
-    collider_state.contact_data.friction[i_c, i_b] = qd.max(qd.max(friction_a, friction_b), 1e-2)
+    collider_state.contact_data.friction[i_c, i_b] = qd.max(friction_a, friction_b)
     collider_state.contact_data.friction_torsional[i_c, i_b] = qd.max(friction_torsional_a, friction_torsional_b)
     collider_state.contact_data.friction_rolling[i_c, i_b] = qd.max(friction_rolling_a, friction_rolling_b)
     # The constraint time constant is floored on the mixed value rather than on each geom's own (see the geom

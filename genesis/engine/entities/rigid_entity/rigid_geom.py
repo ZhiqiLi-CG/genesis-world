@@ -330,7 +330,9 @@ class RigidGeom(RBC):
     @gs.assert_built
     def set_friction(self, friction):
         """
-        Set the friction coefficient of this geometry.
+        Set the non-negative sliding friction coefficient of this geometry.
+
+        A contact uses the larger coefficient of its two geoms. Set both to zero for frictionless sliding.
         """
         if friction < 0:
             gs.raise_exception("`friction` must be non-negative.")
