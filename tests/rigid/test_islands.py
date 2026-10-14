@@ -1156,6 +1156,16 @@ def test_hibernation_repartitioning(show_viewer, n_envs):
     assert asleep(box2_idx)
     assert_equal(qd_to_numpy(island_state.n_islands), 1)
 
+    # Internal contacts carry equal and opposite forces even when every link in their island sleeps
+    boxes_contact_force = [box.get_links_net_contact_force() for box in (box1, box2)]
+    gravity = solver.get_gravity()
+    for box, contact_force in zip((box1, box2), boxes_contact_force):
+        assert_allclose(contact_force[..., 0, 2], -gravity[..., 2] * box.get_mass(), rtol=1e-3)
+    for _ in range(3):
+        scene.step()
+        for box, contact_force in zip((box1, box2), boxes_contact_force):
+            assert_equal(box.get_links_net_contact_force(), contact_force)
+
     box1.set_pos([1.0, 0.0, 0.15])
     assert awake(box1_idx)
     assert awake(box2_idx)

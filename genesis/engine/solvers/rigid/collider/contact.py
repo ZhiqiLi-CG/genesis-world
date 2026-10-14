@@ -187,8 +187,8 @@ def func_collider_clear_env(
     rigid_config: qd.template(),
 ):
     if qd.static(rigid_config.use_hibernation):
-        # Advect the contacts of the sleepers: a hibernated-fixed pair stays where it is, so its contact is kept at the
-        # front of the buffer with the force of the last solve it took part in (see n_contacts_hibernated in
+        # Advect the contacts of the sleepers: a hibernated link against a fixed or hibernated link stays where it is,
+        # so its contact is kept at the front of the buffer with its last solved force (see n_contacts_hibernated in
         # array_class.py for what reads the kept range). The contacts are first flagged on their raw slot, in the sort
         # key the narrowphase rewrites before reading it, then compacted in raw order: every slot written to was
         # already read, so no kept contact is overwritten. The kept range then lists them in their last logical order
@@ -207,8 +207,10 @@ def func_collider_clear_env(
                 i_lb = collider_state.contact_data.link_b[i_c, i_b]
                 I_la = [i_la, i_b] if qd.static(rigid_config.batch_links_info) else i_la
                 I_lb = [i_lb, i_b] if qd.static(rigid_config.batch_links_info) else i_lb
-                if (dyn_state.links.is_hibernated[i_la, i_b] and dyn_info.links.is_fixed[I_lb]) or (
-                    dyn_state.links.is_hibernated[i_lb, i_b] and dyn_info.links.is_fixed[I_la]
+                is_a_hibernated = dyn_state.links.is_hibernated[i_la, i_b]
+                is_b_hibernated = dyn_state.links.is_hibernated[i_lb, i_b]
+                if (is_a_hibernated and (is_b_hibernated or dyn_info.links.is_fixed[I_lb])) or (
+                    is_b_hibernated and dyn_info.links.is_fixed[I_la]
                 ):
                     collider_state.contact_sort_key[i_c, i_b] = 1.0
             n_hib = 0
@@ -279,7 +281,7 @@ def func_promote_woken_contacts(i_b, dyn_state: array_class.DynState, collider_s
         i_c = collider_state.contact_sort_idx[i_c_, i_b]
         i_la = collider_state.contact_data.link_a[i_c, i_b]
         i_lb = collider_state.contact_data.link_b[i_c, i_b]
-        # A kept contact pairs a sleeper with a fixed link, which never sleeps: both flags clear means the sleeper woke
+        # An island wakes as a whole, so both flags clear when the sleepers of a kept contact wake
         if dyn_state.links.is_hibernated[i_la, i_b] or dyn_state.links.is_hibernated[i_lb, i_b]:
             i_c_ = i_c_ + 1
         else:
