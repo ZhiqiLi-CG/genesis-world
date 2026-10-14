@@ -511,9 +511,12 @@ class RigidOptions(GravityMixin, TimeBasedMixin):
         Tolerance for the noslip solver. Defaults to 1e-6.
     friction_cone : gs.friction_cone, optional
         Contact friction cone model, trading numerical robustness for physical accuracy. 'gs.friction_cone.pyramidal'
-        (default) is robust and easy to solve; 'gs.friction_cone.elliptic' is the exact isotropic cone, harder to solve
-        but paired with a high 'impratio' it holds resting stacks without slow tangential creep. See 'gs.friction_cone'
-        for the description of each model. Unsupported with the noslip solver or differentiable simulation.
+        is robust and easy to solve. 'gs.friction_cone.elliptic' is isotropic and, with Signorini contact resolution,
+        keeps sliding contacts on their supports, at the cost of a harder solve. A high 'impratio' suppresses resting
+        creep with the elliptic cone. If None, resolved based on the solver configuration: 'pyramidal' for noslip,
+        differentiable simulation, the CG solver, 'enable_mujoco_compatibility', or explicit 'convex' contact resolution,
+        and 'elliptic' otherwise. Defaults to None. Select 'pyramidal' explicitly for the robust convex model. The
+        elliptic cone is unsupported with noslip or differentiable simulation. See 'gs.friction_cone' for details.
     contact_resolution : gs.contact_resolution, optional
         How a contact's normal force and friction force are resolved against each other.
         'gs.contact_resolution.signorini' bounds friction against the normal force the contact has developed, so sliding
@@ -617,7 +620,7 @@ class RigidOptions(GravityMixin, TimeBasedMixin):
     ls_tolerance: PositiveFloat = 1e-2
     noslip_iterations: NonNegativeInt = 0
     noslip_tolerance: PositiveFloat = 1e-6
-    friction_cone: gs.friction_cone = gs.friction_cone.pyramidal
+    friction_cone: gs.friction_cone | None = None
     contact_resolution: gs.contact_resolution | None = None
     enable_torsional_friction: StrictBool = False
     enable_rolling_friction: StrictBool = False

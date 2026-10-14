@@ -288,6 +288,20 @@ class RigidSolver(GravityMixin, TimeBasedMixin, KinematicSolver):
             None if options.constraint_timeconst is None else max(options.constraint_timeconst, self._sol_min_timeconst)
         )
 
+        # Separating normal force from friction prevents sliding from lifting supported bodies. Explicit convex
+        # resolution and compatibility mode keep the pyramidal model, also required by noslip and differentiation
+        if options.friction_cone is None:
+            if (
+                options.noslip_iterations > 0
+                or self._requires_grad
+                or self._enable_mujoco_compatibility
+                or options.constraint_solver != gs.constraint_solver.Newton
+                or options.contact_resolution == gs.contact_resolution.convex
+            ):
+                options.friction_cone = gs.friction_cone.pyramidal
+            else:
+                options.friction_cone = gs.friction_cone.elliptic
+
         if options.friction_cone == gs.friction_cone.elliptic and self._requires_grad:
             gs.raise_exception("The elliptic friction cone is not supported yet when 'requires_grad' is True.")
 

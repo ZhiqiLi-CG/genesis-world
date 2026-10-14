@@ -1096,12 +1096,14 @@ def test_elliptic_cone_push_isotropy(contact_resolution, is_box_mesh, scale, pre
 @pytest.mark.parametrize(
     "friction_cone, contact_resolution",
     [
+        pytest.param(None, None, id="default"),
         (gs.friction_cone.pyramidal, gs.contact_resolution.convex),
         (gs.friction_cone.elliptic, gs.contact_resolution.convex),
         (gs.friction_cone.elliptic, gs.contact_resolution.signorini),
     ],
 )
 def test_kinetic_friction(n_envs, precision, friction_cone, contact_resolution, show_viewer):
+    is_signorini = contact_resolution in (None, gs.contact_resolution.signorini)
     GRAVITY = 9.81
     SIZE = 0.1
     # A cube resting flat tips once friction can torque it over its leading edge, from mu = width / (2 * com_height).
@@ -1109,22 +1111,23 @@ def test_kinetic_friction(n_envs, precision, friction_cone, contact_resolution, 
     # Friction coefficient and launch speed per box, spanning both sides of that threshold. The plane wears the
     # smallest coefficient in the sweep so the pairwise max leaves each box its own.
     BOXES = ((0.01, 6.0), (0.25, 6.0), (0.5, 2.0), (0.5, 6.0), (0.5, 20.0), (0.9, 6.0), (1.2, 6.0), (2.0, 6.0))
-    if contact_resolution != gs.contact_resolution.signorini:
+    if not is_signorini:
         BOXES = ((0.01, 6.0),)
     BOXES = ((0.0, 1.0), (1e-6, 1.0), (0.001, 1.0), (0.005, 1.0)) + BOXES
     N_SETTLE = 40
     N_SLIDE = 40
+
+    rigid_options = gs.options.RigidOptions(integrator=gs.integrator.Euler)
+    if friction_cone is not None:
+        rigid_options.friction_cone = friction_cone
+        rigid_options.contact_resolution = contact_resolution
 
     scene = gs.Scene(
         sim_options=gs.options.SimOptions(
             dt=0.005,
             gravity=(0.0, 0.0, -GRAVITY),
         ),
-        rigid_options=gs.options.RigidOptions(
-            integrator=gs.integrator.Euler,
-            friction_cone=friction_cone,
-            contact_resolution=contact_resolution,
-        ),
+        rigid_options=rigid_options,
         viewer_options=gs.options.ViewerOptions(
             camera_pos=(1.0, -1.5, 0.6),
             camera_lookat=(1.0, 0.3, 0.05),
@@ -1188,19 +1191,19 @@ def test_kinetic_friction(n_envs, precision, friction_cone, contact_resolution, 
 
     # Below the threshold the box slides flat; above it, friction torques it over its leading edge.
     assert_allclose(tilt_max[is_sliding], 0.0, atol=0.1)
-    if contact_resolution == gs.contact_resolution.signorini:
+    if is_signorini:
         assert (tilt_max[~is_sliding] > 45.0).all()
 
     # Penetration answers to the load alone, so a sliding box sits exactly as deep as a resting one. Every box here
     # carries the same weight, so holding all of them to their common resting height pins the penetration against
     # both the friction coefficient and the sliding speed at once. The bound is set by the box closest to the
     # tipping threshold, whose contact force genuinely leans toward its leading edge and lifts the centre of mass.
-    height_tolerance = 5e-7 if contact_resolution == gs.contact_resolution.signorini else 5e-4
+    height_tolerance = 5e-7 if is_signorini else 5e-4
     assert_allclose(height_min[is_sliding], height_0[is_sliding], atol=height_tolerance)
     assert_allclose(height_max[is_sliding], height_0[is_sliding], atol=height_tolerance)
 
     # Signorini decouples the normal force from tangential demand, so every sliding contact carries the weight.
-    if contact_resolution == gs.contact_resolution.signorini:
+    if is_signorini:
         normal_force = torch.stack([box.get_links_net_contact_force().sum(dim=-2)[..., 2] for box in boxes])
         assert_allclose(normal_force[is_sliding], boxes[0].get_mass() * GRAVITY, rtol=0.01)
     else:
@@ -1212,7 +1215,7 @@ def test_kinetic_friction(n_envs, precision, friction_cone, contact_resolution, 
 
     # Each box decelerates at its own mu * g, independently of how fast it was launched.
     deceleration = (speed_0 - speed_1) / (N_SLIDE * scene.sim.dt)
-    if contact_resolution == gs.contact_resolution.signorini:
+    if is_signorini:
         assert_allclose(
             deceleration[is_sliding], (friction * GRAVITY).expand_as(height_0)[is_sliding], rtol=0.01, atol=1e-5
         )
